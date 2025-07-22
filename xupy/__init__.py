@@ -1,0 +1,3 @@
+"""
+XuPy: Astrophysics Python package
+"""
