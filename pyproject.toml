@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "XuPy"
-version = "0.1.9"
-description = "... Python package"
+version = "1.0"
+description = "Masked Arrays made simple for CuPy"
 authors = [
     { name = "Pietro Ferraiuolo", email = "pietro.ferraiuolo@inaf.it" }
 ]

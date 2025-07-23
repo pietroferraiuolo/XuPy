@@ -18,6 +18,10 @@ def _to_numpy(arr: Any) -> np.ndarray:
         return cp.asnumpy(arr)
     return np.asarray(arr)
 
+def _asmarray(cupy_arr: Any) -> np.ndarray:
+    """Convert a CuPy array to NumPy masked array."""
+    return cupy_arr.asmarray() if HAS_CUPY else cupy_arr
+
 
 # Fixtures for test data
 @pytest.fixture
@@ -36,6 +40,11 @@ def simple_mask() -> np.ndarray:
 def masked_arr(simple_data: np.ndarray, simple_mask: np.ndarray) -> MaskedArray:
     """Return a masked array with simple data and mask."""
     return masked_array(simple_data, simple_mask)
+
+@pytest.fixture
+def simple_masked_arr(simple_data: np.ndarray, simple_mask: np.ndarray) -> MaskedArray:
+    """Return a masked array with simple data and mask."""
+    return np.ma.masked_array(simple_data, simple_mask)
 
 
 @pytest.fixture
@@ -85,126 +94,126 @@ class TestRepresentation:
 # Test arithmetic operations
 class TestArithmeticOperations:
     # Binary operations
-    def test_add(self, masked_arr: MaskedArray, simple_data: np.ndarray) -> None:
+    def test_add(self, masked_arr: MaskedArray, simple_masked_arr: np.ndarray) -> None:
         """Test addition with array and scalar."""
         # Array + Array
         result = masked_arr + masked_arr
-        expected_data = simple_data + simple_data
-        np.testing.assert_array_equal(_to_numpy(result.data), expected_data)
+        expected_data = simple_masked_arr + simple_masked_arr
+        np.testing.assert_array_equal(_asmarray(result).data, expected_data.data)
         
         # Array + Scalar
         result = masked_arr + 2.0
-        expected_data = simple_data + 2.0
-        np.testing.assert_array_equal(_to_numpy(result.data), expected_data)
+        expected_data = simple_masked_arr + 2.0
+        np.testing.assert_array_equal(_asmarray(result).data, expected_data.data)
 
-    def test_subtract(self, masked_arr: MaskedArray, simple_data: np.ndarray) -> None:
+    def test_subtract(self, masked_arr: MaskedArray, simple_masked_arr: np.ndarray) -> None:
         """Test subtraction with array and scalar."""
         # Array - Array
         result = masked_arr - masked_arr
-        expected_data = simple_data - simple_data
-        np.testing.assert_array_equal(_to_numpy(result.data), expected_data)
+        expected_data = simple_masked_arr - simple_masked_arr
+        np.testing.assert_array_equal(_asmarray(result).data, expected_data)
         
         # Array - Scalar
         result = masked_arr - 2.0
-        expected_data = simple_data - 2.0
-        np.testing.assert_array_equal(_to_numpy(result.data), expected_data)
+        expected_data = simple_masked_arr - 2.0
+        np.testing.assert_array_equal(_asmarray(result).data, expected_data)
 
-    def test_multiply(self, masked_arr: MaskedArray, simple_data: np.ndarray) -> None:
+    def test_multiply(self, masked_arr: MaskedArray, simple_masked_arr: np.ndarray) -> None:
         """Test multiplication with array and scalar."""
         # Array * Array
         result = masked_arr * masked_arr
-        expected_data = simple_data * simple_data
+        expected_data = simple_masked_arr * simple_masked_arr
         np.testing.assert_array_equal(_to_numpy(result.data), expected_data)
         
         # Array * Scalar
         result = masked_arr * 2.0
-        expected_data = simple_data * 2.0
+        expected_data = simple_masked_arr * 2.0
         np.testing.assert_array_equal(_to_numpy(result.data), expected_data)
 
-    def test_truediv(self, masked_arr: MaskedArray, simple_data: np.ndarray) -> None:
+    def test_truediv(self, masked_arr: MaskedArray, simple_masked_arr: np.ndarray) -> None:
         """Test division with array and scalar."""
         # Array / Array
         result = masked_arr / masked_arr
         # Avoid division by zero for masked values
         valid_mask = (_to_numpy(masked_arr.data) != 0)
-        expected_data = np.zeros_like(simple_data)
-        expected_data[valid_mask] = simple_data[valid_mask] / simple_data[valid_mask]
+        expected_data = np.zeros_like(simple_masked_arr)
+        expected_data[valid_mask] = simple_masked_arr[valid_mask] / simple_masked_arr[valid_mask]
         np.testing.assert_allclose(_to_numpy(result.data)[valid_mask], expected_data[valid_mask])
         
         # Array / Scalar
         result = masked_arr / 2.0
-        expected_data = simple_data / 2.0
+        expected_data = simple_masked_arr / 2.0
         np.testing.assert_array_equal(_to_numpy(result.data), expected_data)
 
-    def test_floordiv(self, masked_arr: MaskedArray, simple_data: np.ndarray) -> None:
+    def test_floordiv(self, masked_arr: MaskedArray, simple_masked_arr: np.ndarray) -> None:
         """Test floor division with array and scalar."""
         # Array // Array
         result = masked_arr // masked_arr
         # Avoid division by zero for masked values
         valid_mask = (_to_numpy(masked_arr.data) != 0)
-        expected_data = np.zeros_like(simple_data)
-        expected_data[valid_mask] = simple_data[valid_mask] // simple_data[valid_mask]
+        expected_data = np.zeros_like(simple_masked_arr)
+        expected_data[valid_mask] = simple_masked_arr[valid_mask] // simple_masked_arr[valid_mask]
         np.testing.assert_allclose(_to_numpy(result.data)[valid_mask], expected_data[valid_mask])
         
         # Array // Scalar
         result = masked_arr // 2.0
-        expected_data = simple_data // 2.0
+        expected_data = simple_masked_arr // 2.0
         np.testing.assert_array_equal(_to_numpy(result.data), expected_data)
 
-    def test_modulo(self, masked_arr: MaskedArray, simple_data: np.ndarray) -> None:
+    def test_modulo(self, masked_arr: MaskedArray, simple_masked_arr: np.ndarray) -> None:
         """Test modulo with array and scalar."""
         # Array % Array
         result = masked_arr % masked_arr
         # Avoid division by zero for masked values
         valid_mask = (_to_numpy(masked_arr.data) != 0)
-        expected_data = np.zeros_like(simple_data)
-        expected_data[valid_mask] = simple_data[valid_mask] % simple_data[valid_mask]
+        expected_data = np.zeros_like(simple_masked_arr)
+        expected_data[valid_mask] = simple_masked_arr[valid_mask] % simple_masked_arr[valid_mask]
         np.testing.assert_allclose(_to_numpy(result.data)[valid_mask], expected_data[valid_mask])
         
         # Array % Scalar
         result = masked_arr % 2.0
-        expected_data = simple_data % 2.0
+        expected_data = simple_masked_arr % 2.0
         np.testing.assert_array_equal(_to_numpy(result.data), expected_data)
 
-    def test_power(self, masked_arr: MaskedArray, simple_data: np.ndarray) -> None:
+    def test_power(self, masked_arr: MaskedArray, simple_masked_arr: np.ndarray) -> None:
         """Test power with array and scalar."""
         # Array ** Array
         result = masked_arr ** 2
-        expected_data = simple_data ** 2
+        expected_data = simple_masked_arr ** 2
         np.testing.assert_array_equal(_to_numpy(result.data), expected_data)
         
         # Array ** Scalar
         result = masked_arr ** 2.0
-        expected_data = simple_data ** 2.0
+        expected_data = simple_masked_arr ** 2.0
         np.testing.assert_array_equal(_to_numpy(result.data), expected_data)
 
     # Reflected operations
-    def test_radd(self, masked_arr: MaskedArray, simple_data: np.ndarray) -> None:
+    def test_radd(self, masked_arr: MaskedArray, simple_masked_arr: np.ndarray) -> None:
         """Test reflected addition."""
         result = 2.0 + masked_arr
-        expected_data = 2.0 + simple_data
+        expected_data = 2.0 + simple_masked_arr
         np.testing.assert_array_equal(_to_numpy(result.data), expected_data)
 
-    def test_rsub(self, masked_arr: MaskedArray, simple_data: np.ndarray) -> None:
+    def test_rsub(self, masked_arr: MaskedArray, simple_masked_arr: np.ndarray) -> None:
         """Test reflected subtraction."""
         result = 10.0 - masked_arr
-        expected_data = 10.0 - simple_data
+        expected_data = 10.0 - simple_masked_arr
         np.testing.assert_array_equal(_to_numpy(result.data), expected_data)
 
     # In-place operations
-    def test_iadd(self, masked_arr: MaskedArray, simple_data: np.ndarray) -> None:
+    def test_iadd(self, masked_arr: MaskedArray) -> None:
         """Test in-place addition."""
-        original_data = _to_numpy(masked_arr.data).copy()
+        original_data = _asmarray(masked_arr).data.copy()
         masked_arr += 2.0
         expected_data = original_data + 2.0
-        np.testing.assert_array_equal(_to_numpy(masked_arr.data), expected_data)
+        np.testing.assert_array_equal(_asmarray(masked_arr).data, expected_data)
 
-    def test_isub(self, masked_arr: MaskedArray, simple_data: np.ndarray) -> None:
+    def test_isub(self, masked_arr: MaskedArray) -> None:
         """Test in-place subtraction."""
-        original_data = _to_numpy(masked_arr.data).copy()
+        original_data = _asmarray(masked_arr).data.copy()
         masked_arr -= 2.0
         expected_data = original_data - 2.0
-        np.testing.assert_array_equal(_to_numpy(masked_arr.data), expected_data)
+        np.testing.assert_array_equal(_asmarray(masked_arr).data, expected_data)
 
 
 # Test matrix multiplication
@@ -215,22 +224,22 @@ class TestMatrixMultiplication:
         b = masked_array(np.array([[5.0, 6.0], [7.0, 8.0]]))
         
         result = a @ b
-        expected = np.array([[19.0, 22.0], [43.0, 50.0]])
-        np.testing.assert_array_equal(_to_numpy(result.data), expected)
+        expected = _asmarray(a) @ _asmarray(b)
+        np.testing.assert_array_equal(_asmarray(result), expected)
 
 
 # Test unary operations
 class TestUnaryOperations:
-    def test_neg(self, masked_arr: MaskedArray, simple_data: np.ndarray) -> None:
+    def test_neg(self, masked_arr: MaskedArray, simple_masked_arr: np.ndarray) -> None:
         """Test negation."""
         result = -masked_arr
-        expected_data = -simple_data
+        expected_data = -simple_masked_arr
         np.testing.assert_array_equal(_to_numpy(result.data), expected_data)
 
-    def test_pos(self, masked_arr: MaskedArray, simple_data: np.ndarray) -> None:
+    def test_pos(self, masked_arr: MaskedArray, simple_masked_arr: np.ndarray) -> None:
         """Test unary plus."""
         result = +masked_arr
-        expected_data = +simple_data
+        expected_data = +simple_masked_arr
         np.testing.assert_array_equal(_to_numpy(result.data), expected_data)
 
     def test_abs(self) -> None:
@@ -243,71 +252,71 @@ class TestUnaryOperations:
 
 # Test comparison operations
 class TestComparisonOperations:
-    def test_eq(self, masked_arr: MaskedArray, simple_data: np.ndarray) -> None:
+    def test_eq(self, masked_arr: MaskedArray, simple_masked_arr: np.ndarray) -> None:
         """Test equality comparison."""
         result = masked_arr == masked_arr
-        expected = np.ones_like(simple_data, dtype=bool)
+        expected = np.ones_like(simple_masked_arr, dtype=bool)
         np.testing.assert_array_equal(_to_numpy(result), expected)
         
         result = masked_arr == 3.0
-        expected = simple_data == 3.0
+        expected = simple_masked_arr == 3.0
         np.testing.assert_array_equal(_to_numpy(result), expected)
 
-    def test_ne(self, masked_arr: MaskedArray, simple_data: np.ndarray) -> None:
+    def test_ne(self, masked_arr: MaskedArray, simple_masked_arr: np.ndarray) -> None:
         """Test inequality comparison."""
         result = masked_arr != masked_arr
-        expected = np.zeros_like(simple_data, dtype=bool)
+        expected = np.zeros_like(simple_masked_arr, dtype=bool)
         np.testing.assert_array_equal(_to_numpy(result), expected)
         
         result = masked_arr != 3.0
-        expected = simple_data != 3.0
+        expected = simple_masked_arr != 3.0
         np.testing.assert_array_equal(_to_numpy(result), expected)
 
-    def test_lt(self, masked_arr: MaskedArray, simple_data: np.ndarray) -> None:
+    def test_lt(self, masked_arr: MaskedArray, simple_masked_arr: np.ndarray) -> None:
         """Test less than comparison."""
         result = masked_arr < 3.0
-        expected = simple_data < 3.0
+        expected = simple_masked_arr < 3.0
         np.testing.assert_array_equal(_to_numpy(result), expected)
 
-    def test_le(self, masked_arr: MaskedArray, simple_data: np.ndarray) -> None:
+    def test_le(self, masked_arr: MaskedArray, simple_masked_arr: np.ndarray) -> None:
         """Test less than or equal comparison."""
         result = masked_arr <= 3.0
-        expected = simple_data <= 3.0
+        expected = simple_masked_arr <= 3.0
         np.testing.assert_array_equal(_to_numpy(result), expected)
 
-    def test_gt(self, masked_arr: MaskedArray, simple_data: np.ndarray) -> None:
+    def test_gt(self, masked_arr: MaskedArray, simple_masked_arr: np.ndarray) -> None:
         """Test greater than comparison."""
         result = masked_arr > 3.0
-        expected = simple_data > 3.0
+        expected = simple_masked_arr > 3.0
         np.testing.assert_array_equal(_to_numpy(result), expected)
 
-    def test_ge(self, masked_arr: MaskedArray, simple_data: np.ndarray) -> None:
+    def test_ge(self, masked_arr: MaskedArray, simple_masked_arr: np.ndarray) -> None:
         """Test greater than or equal comparison."""
         result = masked_arr >= 3.0
-        expected = simple_data >= 3.0
+        expected = simple_masked_arr >= 3.0
         np.testing.assert_array_equal(_to_numpy(result), expected)
 
 
 # Test indexing and slicing
 class TestIndexingAndSlicing:
-    def test_basic_indexing(self, masked_arr: MaskedArray, simple_data: np.ndarray, simple_mask: np.ndarray) -> None:
+    def test_basic_indexing(self, masked_arr: MaskedArray, simple_masked_arr: np.ndarray, simple_mask: np.ndarray) -> None:
         """Test basic indexing."""
         # Single element
         if simple_mask[0, 0]:  # If masked
             assert masked_arr[0, 0] is np.ma.masked
         else:
-            assert masked_arr[0, 0] == simple_data[0, 0]
+            assert masked_arr[0, 0] == simple_masked_arr[0, 0]
         
         # Slicing
         result = masked_arr[0, :]
-        np.testing.assert_array_equal(_to_numpy(result.data), simple_data[0, :])
+        np.testing.assert_array_equal(_to_numpy(result.data), simple_masked_arr[0, :])
         np.testing.assert_array_equal(_to_numpy(result.mask), simple_mask[0, :])
 
-    def test_advanced_indexing(self, masked_arr: MaskedArray, simple_data: np.ndarray, simple_mask: np.ndarray) -> None:
+    def test_advanced_indexing(self, masked_arr: MaskedArray, simple_masked_arr: np.ndarray, simple_mask: np.ndarray) -> None:
         """Test advanced indexing."""
         idx = np.array([0, 1])
         result = masked_arr[idx, :]
-        np.testing.assert_array_equal(_to_numpy(result.data), simple_data[idx, :])
+        np.testing.assert_array_equal(_to_numpy(result.data), simple_masked_arr[idx, :])
         np.testing.assert_array_equal(_to_numpy(result.mask), simple_mask[idx, :])
 
 
@@ -322,11 +331,11 @@ class TestAttributeAccess:
 
 # Test conversion
 class TestConversion:
-    def test_asmarray(self, masked_arr: MaskedArray, simple_data: np.ndarray, simple_mask: np.ndarray) -> None:
+    def test_asmarray(self, masked_arr: MaskedArray, simple_masked_arr: np.ndarray, simple_mask: np.ndarray) -> None:
         """Test conversion to NumPy masked array."""
         marray = masked_arr.asmarray()
         assert isinstance(marray, np.ma.MaskedArray)
-        np.testing.assert_array_equal(marray.data, simple_data)
+        np.testing.assert_array_equal(marray.data, simple_masked_arr)
         np.testing.assert_array_equal(marray.mask, simple_mask)
 
 

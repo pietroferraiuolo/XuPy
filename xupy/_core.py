@@ -65,15 +65,23 @@ class _XupyMaskedArray:
     def __iadd__(self, other: object) -> "_XupyMaskedArray":
         """
         In-place element-wise addition with mask propagation.
+
+        Parameters
+        ----------
+        other : object
+            The value or array to add.
+
+        Returns
+        -------
+        _XupyMaskedArray
+            The updated masked array.
         """
         if isinstance(other, _XupyMaskedArray):
-            other = other.asmarray()
-        own = self.asmarray()
-        result = own.__iadd__(other)
-        self.data = result.data
-        self.mask = result.mask
+            self.data += other.data
+            self.mask |= other.mask
+        else:
+            self.data += other
         return self
-        
 
     def __rsub__(self, other: object) -> "_XupyMaskedArray":
         """
@@ -88,13 +96,22 @@ class _XupyMaskedArray:
     def __isub__(self, other: object) -> "_XupyMaskedArray":
         """
         In-place element-wise subtraction with mask propagation.
+
+        Parameters
+        ----------
+        other : object
+            The value or array to subtract.
+
+        Returns
+        -------
+        _XupyMaskedArray
+            The updated masked array.
         """
         if isinstance(other, _XupyMaskedArray):
-            other = other.asmarray()
-        own = self.asmarray()
-        result = own.__isub__(other)
-        self.data = result.data
-        self.mask = result.mask
+            self.data -= other.data
+            self.mask |= other.mask
+        else:
+            self.data -= other
         return self
 
     def __rmul__(self, other: object) -> "_XupyMaskedArray":
@@ -110,13 +127,22 @@ class _XupyMaskedArray:
     def __imul__(self, other: object) -> "_XupyMaskedArray":
         """
         In-place element-wise multiplication with mask propagation.
+
+        Parameters
+        ----------
+        other : object
+            The value or array to multiply.
+
+        Returns
+        -------
+        _XupyMaskedArray
+            The updated masked array.
         """
         if isinstance(other, _XupyMaskedArray):
-            other = other.asmarray()
-        own = self.asmarray()
-        result = own.__imul__(other)
-        self.data = result.data
-        self.mask = result.mask
+            self.data *= other.data
+            self.mask |= other.mask
+        else:
+            self.data *= other
         return self
 
     def __rtruediv__(self, other: object) -> "_XupyMaskedArray":
@@ -132,13 +158,22 @@ class _XupyMaskedArray:
     def __itruediv__(self, other: object) -> "_XupyMaskedArray":
         """
         In-place element-wise true division with mask propagation.
+
+        Parameters
+        ----------
+        other : object
+            The value or array to divide by.
+
+        Returns
+        -------
+        _XupyMaskedArray
+            The updated masked array.
         """
         if isinstance(other, _XupyMaskedArray):
-            other = other.asmarray()
-        own = self.asmarray()
-        result = own.__itruediv__(other)
-        self.data = result.data
-        self.mask = result.mask
+            self.data /= other.data
+            self.mask |= other.mask
+        else:
+            self.data /= other
         return self
 
     def __rfloordiv__(self, other: object) -> "_XupyMaskedArray":
@@ -154,13 +189,22 @@ class _XupyMaskedArray:
     def __ifloordiv__(self, other: object) -> "_XupyMaskedArray":
         """
         In-place element-wise floor division with mask propagation.
+
+        Parameters
+        ----------
+        other : object
+            The value or array to divide by.
+
+        Returns
+        -------
+        _XupyMaskedArray
+            The updated masked array.
         """
         if isinstance(other, _XupyMaskedArray):
-            other = other.asmarray()
-        own = self.asmarray()
-        result = own.__ifloordiv__(other)
-        self.data = result.data
-        self.mask = result.mask
+            self.data //= other.data
+            self.mask |= other.mask
+        else:
+            self.data //= other
         return self
 
     def __rmod__(self, other: object) -> "_XupyMaskedArray":
@@ -176,13 +220,22 @@ class _XupyMaskedArray:
     def __imod__(self, other: object) -> "_XupyMaskedArray":
         """
         In-place element-wise modulo operation with mask propagation.
+
+        Parameters
+        ----------
+        other : object
+            The value or array to modulo by.
+
+        Returns
+        -------
+        _XupyMaskedArray
+            The updated masked array.
         """
         if isinstance(other, _XupyMaskedArray):
-            other = other.asmarray()
-        own = self.asmarray()
-        result = own.__imod__(other)
-        self.data = result.data
-        self.mask = result.mask
+            self.data %= other.data
+            self.mask |= other.mask
+        else:
+            self.data %= other
         return self
 
     def __rpow__(self, other: object) -> "_XupyMaskedArray":
@@ -198,25 +251,46 @@ class _XupyMaskedArray:
     def __ipow__(self, other: object) -> "_XupyMaskedArray":
         """
         In-place element-wise exponentiation with mask propagation.
+
+        Parameters
+        ----------
+        other : object
+            The value or array to exponentiate by.
+
+        Returns
+        -------
+        _XupyMaskedArray
+            The updated masked array.
         """
         if isinstance(other, _XupyMaskedArray):
-            other = other.asmarray()
-        own = self.asmarray()
-        result = own.__ipow__(other)
-        self.data = result.data
-        self.mask = result.mask
+            self.data **= other.data
+            self.mask |= other.mask
+        else:
+            self.data **= other
         return self
 
     # --- Matrix Multiplication ---
     def __matmul__(self, other: object) -> "_XupyMaskedArray":
         """
         Matrix multiplication with mask propagation.
+
+        Parameters
+        ----------
+        other : object
+            The value or array to matrix-multiply with.
+
+        Returns
+        -------
+        _XupyMaskedArray
+            The result of the matrix multiplication with combined mask.
         """
-        if isinstance(other, _XupyMaskedArray):
-            other = other.asmarray()
-        own = self.asmarray()
-        result = own @ other
-        return _XupyMaskedArray(result.data, result.mask)
+        if isinstance(other, (_XupyMaskedArray, _np.ma.masked_array)):
+            result_data = self.data @ other.data
+            result_mask = self.mask | other.mask
+        else:
+            result_data = self.data @ other
+            result_mask = self.mask
+        return _XupyMaskedArray(result_data, result_mask)
 
     def __rmatmul__(self, other: object) -> "_XupyMaskedArray":
         """
@@ -231,13 +305,23 @@ class _XupyMaskedArray:
     def __imatmul__(self, other: object) -> "_XupyMaskedArray":
         """
         In-place matrix multiplication with mask propagation.
+
+        Parameters
+        ----------
+        other : object
+            The value or array to matrix-multiply with.
+
+        Returns
+        -------
+        _XupyMaskedArray
+            The updated masked array.
         """
         if isinstance(other, _XupyMaskedArray):
-            other = other.asmarray()
-        own = self.asmarray()
-        result = own @ other
-        self.data = result.data
-        self.mask = result.mask
+            self.data = self.data @ other.data
+            self.mask = self.mask | other.mask
+        else:
+            self.data = self.data @ other
+            # mask unchanged
         return self
 
     # --- Unary Operators ---
