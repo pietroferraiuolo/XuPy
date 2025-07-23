@@ -2,6 +2,8 @@ import numpy as _np
 from xupy import _typings as _t
 from builtins import any as _any
 
+_GPU = False
+
 try:
     from cupy import *              # type: ignore
     import cupy as _xp
@@ -17,7 +19,7 @@ try:
 except Exception as err:
     if isinstance(err, ImportError):
         print("[XuPy] No GPU accelerators found. Fallback to NumPy instead.")
-        _GPU = False
+        _GPU = False # just to be sure ...
         from numpy import *         # type: ignore
 
 
