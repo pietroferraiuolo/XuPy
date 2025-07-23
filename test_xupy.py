@@ -1,6 +1,6 @@
 import pytest
 import numpy as np
-from typing import Any, Tuple, List, Dict, Optional
+from typing import Any
 
 try:
     import cupy as cp
@@ -8,7 +8,7 @@ try:
 except ImportError:
     HAS_CUPY = False
 
-from xupy._core import masked_array, MaskedArray
+from xupy import masked_array, MaskedArray
 
 
 # Helper functions
