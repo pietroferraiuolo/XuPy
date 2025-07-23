@@ -1,5 +1,6 @@
 import numpy as _np
 from xupy import _typings as _t
+from builtins import any as _any
 
 try:
     from cupy import *
@@ -14,35 +15,104 @@ try:
 [XuPy] Using CuPy {_xp.__version__} for acceleration."""
     )
 except Exception as err:
-    if isinstance(e, ImportError):
+    if isinstance(err, ImportError):
         print("[XuPy] No GPU accelerators found. Fallback to NumPy instead.")
         _GPU = False
         from numpy import *
 
 
+class XupyMaskedArray:
+    """
+    A simple masked array wrapper for CuPy arrays.
+
+    Parameters
+    ----------
+    data : array-like
+        The data array (will be converted to CuPy array).
+    mask : array-like
+        Boolean mask array (True means masked).
+    dtype : data-type, optional
+        Desired data type for the data array.
+    """
+    def __init__(self, data, mask=None, dtype=None):
+        self.data = _xp.asarray(data, dtype=dtype if dtype else _xp.float32)
+        if mask is None:
+            self.mask = _xp.zeros(self.data.shape, dtype=bool)
+        else:
+            self.mask = _xp.asarray(mask, dtype=bool)
+
+    def __repr__(self) -> str:
+        data = _xp.asnumpy(self.data)
+        mask = _xp.asnumpy(self.mask)
+        display = data.astype(object)
+        display[mask] = "--"
+        return f"XupyMaskedArray(\ndata=\n{display},\nmask=\n{mask}\n)"
+
+    def __mul__(self, other):
+        if isinstance(other, XupyMaskedArray):
+            result_data = self.data * other.data
+            result_mask = self.mask | other.mask
+        else:
+            result_data = self.data * other
+            result_mask = self.mask
+        return XupyMaskedArray(result_data, result_mask)
+
+    def __truediv__(self, other):
+        if isinstance(other, XupyMaskedArray):
+            result_data = self.data / other.data
+            result_mask = self.mask | other.mask
+        else:
+            result_data = self.data / other
+            result_mask = self.mask
+        return XupyMaskedArray(result_data, result_mask)
+    
+    def __getattr__(self, key):
+        """Get attribute from the underlying CuPy array."""
+        if hasattr(self.data, key):
+            return getattr(self.data, key)
+        raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{key}'")
+    
+    def __getitem__(self, item):
+        """Get item from the underlying CuPy array."""
+        data_item = self.data[item]
+        mask_item = self.mask[item]
+        return XupyMaskedArray(data_item, mask_item)
+
+    def asmarray(self, **kwargs):
+        """Return a NumPy masked array on CPU."""
+        return _np.ma.masked_array(_xp.asnumpy(self.data), mask=_xp.asnumpy(self.mask), **kwargs)
+    
+
 class _XuPyMaskedArray(_xp.ndarray):
     """A masked array that supports GPU acceleration with CuPy."""
-
-    def __init__(
-        self,
-        data: _np.ndarray[_t.Any,_t.Any],
+    
+    def __new__(
+        cls,
+        data: _np.ndarray[_t.Any, _t.Any],
         mask: _np.ndarray[bool | int, _t.Any] = None,
         **kwargs: dict[_t.Any, _t.Any],
-    ) -> None:
+    ) -> "_XuPyMaskedArray":
         """The constructor"""
         if isinstance(data, _xp.ndarray):
-            data = _xp.asnumpy(data)
-        super().__init__(data, **kwargs)
+            obj = data.view(cls)
+        else:
+            obj = _xp.asarray(data, **kwargs).view(cls)
         if mask is None:
-            mask = _xp.zeros(data.shape, dtype=_xp.bool_)
+            mask = _xp.zeros(obj.shape, dtype=_xp.bool_)
         elif isinstance(mask, _np.ndarray):
             mask = _xp.asarray(mask, dtype=_xp.bool_)
-        self._mask = mask
+        if mask.dtype not in (_xp.bool_, _xp.int_, _np.bool_, _np.int_):
+            mask = mask.astype(_xp.bool_)
+        obj._mask = mask
+        return obj
+
 
     @property
     def _mask(self):
         """Get the mask of the array."""
         return self.__dict__.get("_mask", _xp.zeros(self.shape, dtype=_xp.bool_))
+    
+    mask = _mask
 
     @_mask.setter
     def _mask(self, value: _np.ndarray[bool | int, _t.Any]) -> None:
@@ -60,6 +130,100 @@ class _XuPyMaskedArray(_xp.ndarray):
         self._mask = getattr(obj, "_mask", _xp.zeros(self.shape, dtype=_xp.bool_))
         super().__array_finalize__(obj)
 
+    def __repr__(self) -> str:
+        """
+        Return the official string representation of the masked array.
+
+        Returns
+        -------
+        str
+            The string representation of the masked array, showing masked values as '--'.
+        """
+        data = _xp.asnumpy(self)
+        mask = _xp.asnumpy(self._mask)
+        display = data.astype(object)
+        display[mask] = "--"
+        return (
+            f"masked_array(\n"
+            f"data=\n{display},\n"
+            f"mask=\n{mask}\n"
+            f")"
+        )
+
+    def __str__(self) -> str:
+        """
+        Return the informal string representation of the masked array.
+
+        Returns
+        -------
+        str
+            The string representation of the masked array, showing masked values as '--'.
+        """
+        data = _xp.asnumpy(self)
+        mask = _xp.asnumpy(self._mask)
+        display = data.astype(object)
+        display[mask] = "--"
+        return str(display)
+    
+    def __mul__(self, other: _t.Any) -> "_XuPyMaskedArray":
+        """
+        Element-wise multiplication of the masked array with another array or scalar.
+
+        Parameters
+        ----------
+        other : Any
+            The value to multiply with the masked array.
+
+        Returns
+        -------
+        _XuPyMaskedArray
+            A new masked array resulting from the element-wise multiplication.
+        """
+        result = super().__mul__(other)
+        if isinstance(other, _XuPyMaskedArray):
+            mask = self._mask | other._mask
+        else:
+            mask = self._mask
+        return _XuPyMaskedArray(result, mask)
+
+    def __truediv__(self, other: _t.Any) -> "_XuPyMaskedArray":
+        """
+        Element-wise division of the masked array with another array or scalar.
+
+        Parameters
+        ----------
+        other : Any
+            The value to divide the masked array by.
+
+        Returns
+        -------
+        _XuPyMaskedArray
+            A new masked array resulting from the element-wise division.
+        """
+        result = super().__truediv__(other)
+        if isinstance(other, _XuPyMaskedArray):
+            mask = self._mask | other._mask
+        else:
+            mask = self._mask
+        return _XuPyMaskedArray(result, mask)
+
+    def asmarray(self, **kwargs) -> _t.masked_array[_t.Any,_t.Any]:
+        """
+        Return a NumPy masked array from the GPU-backed masked array.
+
+        Parameters
+        ----------
+        **kwargs : Any
+            Additional keyword arguments passed to `numpy.ma.masked_array`.
+
+        Returns
+        -------
+        numpy.ma.MaskedArray
+            The masked array on the CPU as a NumPy masked array.
+        """
+        data = _xp.asnumpy(self)
+        mask = _xp.asnumpy(self._mask)
+        return _np.ma.masked_array(data, mask=mask, **kwargs)
 
 if _GPU:
 
