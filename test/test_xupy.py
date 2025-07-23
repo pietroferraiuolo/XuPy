@@ -8,7 +8,7 @@ try:
 except ImportError:
     HAS_CUPY = False
 
-from xupy import masked_array, MaskedArray
+from xupy._core import masked_array, MaskedArray
 
 
 # Helper functions
