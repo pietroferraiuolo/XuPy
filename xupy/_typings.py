@@ -1,5 +1,5 @@
 from typing import Any, Optional, Union, TypeVar, Protocol, runtime_checkable
-from numpy.typing import NDArray
+from numpy.typing import NDArray, ArrayLike, DTypeLike
 from numpy.ma import masked_array
 
 @runtime_checkable

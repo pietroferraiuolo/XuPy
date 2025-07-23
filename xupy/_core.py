@@ -3,7 +3,7 @@ from xupy import _typings as _t
 from builtins import any as _any
 
 try:
-    from cupy import *
+    from cupy import *              # type: ignore
     import cupy as _xp
 
     gpu = _xp.cuda.runtime.getDeviceProperties(0)["name"].decode()
@@ -18,10 +18,10 @@ except Exception as err:
     if isinstance(err, ImportError):
         print("[XuPy] No GPU accelerators found. Fallback to NumPy instead.")
         _GPU = False
-        from numpy import *
+        from numpy import *         # type: ignore
 
 
-class XupyMaskedArray:
+class _XupyMaskedArray:
     """
     A simple masked array wrapper for CuPy arrays.
 
@@ -34,12 +34,14 @@ class XupyMaskedArray:
     dtype : data-type, optional
         Desired data type for the data array.
     """
-    def __init__(self, data, mask=None, dtype=None):
+    def __init__(self, data:_t.ArrayLike, mask:_t.ArrayLike = None, dtype: _t.DTypeLike = None):
         self.data = _xp.asarray(data, dtype=dtype if dtype else _xp.float32)
         if mask is None:
             self.mask = _xp.zeros(self.data.shape, dtype=bool)
         else:
             self.mask = _xp.asarray(mask, dtype=bool)
+        if self.mask.shape != self.data.shape:
+            raise ValueError("Mask shape must match data shape.") 
 
     def __repr__(self) -> str:
         data = _xp.asnumpy(self.data)
@@ -48,194 +50,411 @@ class XupyMaskedArray:
         display[mask] = "--"
         return f"XupyMaskedArray(\ndata=\n{display},\nmask=\n{mask}\n)"
 
-    def __mul__(self, other):
-        if isinstance(other, XupyMaskedArray):
-            result_data = self.data * other.data
-            result_mask = self.mask | other.mask
-        else:
-            result_data = self.data * other
-            result_mask = self.mask
-        return XupyMaskedArray(result_data, result_mask)
+    # --- Arithmetic Operators ---
 
-    def __truediv__(self, other):
-        if isinstance(other, XupyMaskedArray):
-            result_data = self.data / other.data
-            result_mask = self.mask | other.mask
-        else:
-            result_data = self.data / other
-            result_mask = self.mask
-        return XupyMaskedArray(result_data, result_mask)
+    def __radd__(self, other: object) -> "_XupyMaskedArray":
+        """
+        Reflected element-wise addition with mask propagation.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = own.__radd__(other)
+        return _XupyMaskedArray(result.data, result.mask)
+
+    def __iadd__(self, other: object) -> "_XupyMaskedArray":
+        """
+        In-place element-wise addition with mask propagation.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = own.__iadd__(other)
+        self.data = result.data
+        self.mask = result.mask
+        return self
+        
+
+    def __rsub__(self, other: object) -> "_XupyMaskedArray":
+        """
+        Reflected element-wise subtraction with mask propagation.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = own.__rsub__(other)
+        return _XupyMaskedArray(result.data, result.mask)
+
+    def __isub__(self, other: object) -> "_XupyMaskedArray":
+        """
+        In-place element-wise subtraction with mask propagation.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = own.__isub__(other)
+        self.data = result.data
+        self.mask = result.mask
+        return self
+
+    def __rmul__(self, other: object) -> "_XupyMaskedArray":
+        """
+        Reflected element-wise multiplication with mask propagation.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = own.__rmul__(other)
+        return _XupyMaskedArray(result.data, result.mask)
+
+    def __imul__(self, other: object) -> "_XupyMaskedArray":
+        """
+        In-place element-wise multiplication with mask propagation.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = own.__imul__(other)
+        self.data = result.data
+        self.mask = result.mask
+        return self
+
+    def __rtruediv__(self, other: object) -> "_XupyMaskedArray":
+        """
+        Reflected element-wise true division with mask propagation.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = own.__rtruediv__(other)
+        return _XupyMaskedArray(result.data, result.mask)
+
+    def __itruediv__(self, other: object) -> "_XupyMaskedArray":
+        """
+        In-place element-wise true division with mask propagation.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = own.__itruediv__(other)
+        self.data = result.data
+        self.mask = result.mask
+        return self
+
+    def __rfloordiv__(self, other: object) -> "_XupyMaskedArray":
+        """
+        Reflected element-wise floor division with mask propagation.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = own.__rfloordiv__(other)
+        return _XupyMaskedArray(result.data, result.mask)
+
+    def __ifloordiv__(self, other: object) -> "_XupyMaskedArray":
+        """
+        In-place element-wise floor division with mask propagation.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = own.__ifloordiv__(other)
+        self.data = result.data
+        self.mask = result.mask
+        return self
+
+    def __rmod__(self, other: object) -> "_XupyMaskedArray":
+        """
+        Reflected element-wise modulo operation with mask propagation.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = own.__rmod__(other)
+        return _XupyMaskedArray(result.data, result.mask)
+
+    def __imod__(self, other: object) -> "_XupyMaskedArray":
+        """
+        In-place element-wise modulo operation with mask propagation.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = own.__imod__(other)
+        self.data = result.data
+        self.mask = result.mask
+        return self
+
+    def __rpow__(self, other: object) -> "_XupyMaskedArray":
+        """
+        Reflected element-wise exponentiation with mask propagation.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = own.__rpow__(other)
+        return _XupyMaskedArray(result.data, result.mask)
+
+    def __ipow__(self, other: object) -> "_XupyMaskedArray":
+        """
+        In-place element-wise exponentiation with mask propagation.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = own.__ipow__(other)
+        self.data = result.data
+        self.mask = result.mask
+        return self
+
+    # --- Matrix Multiplication ---
+    def __matmul__(self, other: object) -> "_XupyMaskedArray":
+        """
+        Matrix multiplication with mask propagation.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = own @ other
+        return _XupyMaskedArray(result.data, result.mask)
+
+    def __rmatmul__(self, other: object) -> "_XupyMaskedArray":
+        """
+        Reflected matrix multiplication with mask propagation.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = other @ own
+        return _XupyMaskedArray(result.data, result.mask)
+
+    def __imatmul__(self, other: object) -> "_XupyMaskedArray":
+        """
+        In-place matrix multiplication with mask propagation.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = own @ other
+        self.data = result.data
+        self.mask = result.mask
+        return self
+
+    # --- Unary Operators ---
+    def __neg__(self) -> "_XupyMaskedArray":
+        """
+        Element-wise negation with mask propagation.
+        """
+        result = -self.data
+        return _XupyMaskedArray(result, self.mask)
+
+    def __pos__(self) -> "_XupyMaskedArray":
+        """
+        Element-wise unary plus with mask propagation.
+        """
+        result = +self.data
+        return _XupyMaskedArray(result, self.mask)
+
+    def __abs__(self) -> "_XupyMaskedArray":
+        """
+        Element-wise absolute value with mask propagation.
+        """
+        result = _xp.abs(self.data)
+        return _XupyMaskedArray(result, self.mask)
+
+    # --- Comparison Operators (optional for mask logic) ---
+    def __eq__(self, other: object) -> _xp.ndarray:
+        """
+        Element-wise equality comparison.
+
+        Returns
+        -------
+        xp.ndarray
+            Boolean array with the result of the comparison.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            return self.data == other.data
+        return self.data == other
+
+    def __ne__(self, other: object) -> _xp.ndarray:
+        """
+        Element-wise inequality comparison.
+
+        Returns
+        -------
+        xp.ndarray
+            Boolean array with the result of the comparison.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            return self.data != other.data
+        return self.data != other
+
+    def __lt__(self, other: object) -> _xp.ndarray:
+        """
+        Element-wise less-than comparison.
+
+        Returns
+        -------
+        xp.ndarray
+            Boolean array with the result of the comparison.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            return self.data < other.data
+        return self.data < other
+
+    def __le__(self, other: object) -> _xp.ndarray:
+        """
+        Element-wise less-than-or-equal comparison.
+
+        Returns
+        -------
+        xp.ndarray
+            Boolean array with the result of the comparison.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            return self.data <= other.data
+        return self.data <= other
+
+    def __gt__(self, other: object) -> _xp.ndarray:
+        """
+        Element-wise greater-than comparison.
+
+        Returns
+        -------
+        xp.ndarray
+            Boolean array with the result of the comparison.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            return self.data > other.data
+        return self.data > other
+
+    def __ge__(self, other: object) -> _xp.ndarray:
+        """
+        Element-wise greater-than-or-equal comparison.
+
+        Returns
+        -------
+        xp.ndarray
+            Boolean array with the result of the comparison.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            return self.data >= other.data
+        return self.data >= other
+
+    def __mul__(self, other: object):
+        """
+        Element-wise matrix multiplicationwithmask propagation
+        """
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = own * other
+        return _XupyMaskedArray(result.data, result.mask)
+
+    def __truediv__(self, other: object):
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = own / other
+        return _XupyMaskedArray(result.data, result.mask)
     
-    def __getattr__(self, key):
+    def __add__(self, other: object) -> "_XupyMaskedArray":
+        """
+        Element-wise addition with mask propagation.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = own + other
+        return _XupyMaskedArray(result.data, result.mask)
+
+    def __sub__(self, other: object) -> "_XupyMaskedArray":
+        """
+        Element-wise subtraction with mask propagation.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = own - other
+        return _XupyMaskedArray(result.data, result.mask)
+
+    def __pow__(self, other: object) -> "_XupyMaskedArray":
+        """
+        Element-wise exponentiation with mask propagation.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = own ** other
+        return _XupyMaskedArray(result.data, result.mask)
+
+    def __floordiv__(self, other: object) -> "_XupyMaskedArray":
+        """
+        Element-wise floor division with mask propagation.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = own // other
+        return _XupyMaskedArray(result.data, result.mask)
+
+    def __mod__(self, other: object) -> "_XupyMaskedArray":
+        """
+        Element-wise modulo operation with mask propagation.
+        """
+        if isinstance(other, _XupyMaskedArray):
+            other = other.asmarray()
+        own = self.asmarray()
+        result = own % other
+        return _XupyMaskedArray(result.data, result.mask)
+    
+    def __getattr__(self, key: str):
         """Get attribute from the underlying CuPy array."""
         if hasattr(self.data, key):
             return getattr(self.data, key)
         raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{key}'")
     
-    def __getitem__(self, item):
-        """Get item from the underlying CuPy array."""
+    def __getitem__(self, item: slice) -> "_XupyMaskedArray":
+        """
+        Get item(s) from the masked array, preserving the mask.
+
+        Parameters
+        ----------
+        item : int, slice, or array-like
+            The index or slice to retrieve.
+
+        Returns
+        -------
+        _XupyMaskedArray or scalar
+            The indexed masked array or scalar value if the result is 0-dimensional.
+        """
         data_item = self.data[item]
         mask_item = self.mask[item]
-        return XupyMaskedArray(data_item, mask_item)
+        # If the result is a scalar, return a masked value
+        if data_item.shape == ():
+            if mask_item:
+                return _np.ma.masked
+            return data_item.item()
+        return _XupyMaskedArray(data_item, mask_item)
 
-    def asmarray(self, **kwargs):
+    def asmarray(self, **kwargs: dict[str,_t.Any]) -> _np.ma.MaskedArray[_t.Any,_t.Any]:
         """Return a NumPy masked array on CPU."""
         return _np.ma.masked_array(_xp.asnumpy(self.data), mask=_xp.asnumpy(self.mask), **kwargs)
-    
 
-class _XuPyMaskedArray(_xp.ndarray):
-    """A masked array that supports GPU acceleration with CuPy."""
-    
-    def __new__(
-        cls,
-        data: _np.ndarray[_t.Any, _t.Any],
-        mask: _np.ndarray[bool | int, _t.Any] = None,
-        **kwargs: dict[_t.Any, _t.Any],
-    ) -> "_XuPyMaskedArray":
-        """The constructor"""
-        if isinstance(data, _xp.ndarray):
-            obj = data.view(cls)
-        else:
-            obj = _xp.asarray(data, **kwargs).view(cls)
-        if mask is None:
-            mask = _xp.zeros(obj.shape, dtype=_xp.bool_)
-        elif isinstance(mask, _np.ndarray):
-            mask = _xp.asarray(mask, dtype=_xp.bool_)
-        if mask.dtype not in (_xp.bool_, _xp.int_, _np.bool_, _np.int_):
-            mask = mask.astype(_xp.bool_)
-        obj._mask = mask
-        return obj
-
-
-    @property
-    def _mask(self):
-        """Get the mask of the array."""
-        return self.__dict__.get("_mask", _xp.zeros(self.shape, dtype=_xp.bool_))
-    
-    mask = _mask
-
-    @_mask.setter
-    def _mask(self, value: _np.ndarray[bool | int, _t.Any]) -> None:
-        """Set the mask of the array."""
-        if isinstance(value, _np.ndarray):
-            value = _xp.asarray(value, dtype=_xp.bool_)
-        if value.shape != self.shape:
-            raise ValueError("Mask shape must match data shape.")
-        self.__dict__["_mask"] = value
-    
-    def __array_finalize__(self, obj):
-        """Finalize the array."""
-        if obj is None:
-            return
-        self._mask = getattr(obj, "_mask", _xp.zeros(self.shape, dtype=_xp.bool_))
-        super().__array_finalize__(obj)
-
-    def __repr__(self) -> str:
-        """
-        Return the official string representation of the masked array.
-
-        Returns
-        -------
-        str
-            The string representation of the masked array, showing masked values as '--'.
-        """
-        data = _xp.asnumpy(self)
-        mask = _xp.asnumpy(self._mask)
-        display = data.astype(object)
-        display[mask] = "--"
-        return (
-            f"masked_array(\n"
-            f"data=\n{display},\n"
-            f"mask=\n{mask}\n"
-            f")"
-        )
-
-    def __str__(self) -> str:
-        """
-        Return the informal string representation of the masked array.
-
-        Returns
-        -------
-        str
-            The string representation of the masked array, showing masked values as '--'.
-        """
-        data = _xp.asnumpy(self)
-        mask = _xp.asnumpy(self._mask)
-        display = data.astype(object)
-        display[mask] = "--"
-        return str(display)
-    
-    def __mul__(self, other: _t.Any) -> "_XuPyMaskedArray":
-        """
-        Element-wise multiplication of the masked array with another array or scalar.
-
-        Parameters
-        ----------
-        other : Any
-            The value to multiply with the masked array.
-
-        Returns
-        -------
-        _XuPyMaskedArray
-            A new masked array resulting from the element-wise multiplication.
-        """
-        result = super().__mul__(other)
-        if isinstance(other, _XuPyMaskedArray):
-            mask = self._mask | other._mask
-        else:
-            mask = self._mask
-        return _XuPyMaskedArray(result, mask)
-
-    def __truediv__(self, other: _t.Any) -> "_XuPyMaskedArray":
-        """
-        Element-wise division of the masked array with another array or scalar.
-
-        Parameters
-        ----------
-        other : Any
-            The value to divide the masked array by.
-
-        Returns
-        -------
-        _XuPyMaskedArray
-            A new masked array resulting from the element-wise division.
-        """
-        result = super().__truediv__(other)
-        if isinstance(other, _XuPyMaskedArray):
-            mask = self._mask | other._mask
-        else:
-            mask = self._mask
-        return _XuPyMaskedArray(result, mask)
-
-    def asmarray(self, **kwargs) -> _t.masked_array[_t.Any,_t.Any]:
-        """
-        Return a NumPy masked array from the GPU-backed masked array.
-
-        Parameters
-        ----------
-        **kwargs : Any
-            Additional keyword arguments passed to `numpy.ma.masked_array`.
-
-        Returns
-        -------
-        numpy.ma.MaskedArray
-            The masked array on the CPU as a NumPy masked array.
-        """
-        data = _xp.asnumpy(self)
-        mask = _xp.asnumpy(self._mask)
-        return _np.ma.masked_array(data, mask=mask, **kwargs)
 
 if _GPU:
+    
+    MaskedArray = _XupyMaskedArray
 
     def masked_array(
         data: _t.NDArray[_t.Any],
-        mask: _np.ndarray[bool | int, _t.Any] = None,
+        mask: _np.ndarray[_t.ArrayLike,_t.Any] = None,
         **kwargs: dict[_t.Any, _t.Any],
     ) -> _t.XupyMaskedArray:
         """
         Create an N-dimensional masked array with GPU support.
         
-        The class `XupyMaskedArray` is a child of `cupy.ndarray` and provides
+        The class `XupyMaskedArray` is a wrapper of `cupy.ndarray` with
         additional functionality for handling masked arrays on the GPU.
         It defines the additional property `mask`, which can be an array of booleans or integers,
         where `True` indicates a masked value.
@@ -244,7 +463,7 @@ if _GPU:
         ----------
         data : NDArray[Any]
             The data to be stored in the masked array.
-        mask : NDArray[bool | int, Any], optional
+        mask : ArrayLike[bool|int], optional
             The mask for the array, where `True` indicates a masked value.
             If not provided, a mask of all `False` values is created.
         **kwargs : Any    
@@ -257,4 +476,4 @@ if _GPU:
         """
         if isinstance(data, _np.ndarray):
             data = _xp.asarray(data, dtype=_xp.float32)
-        return _XuPyMaskedArray(data, mask, **kwargs)
+        return _XupyMaskedArray(data, mask, **kwargs)
