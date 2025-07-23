@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "XuPy"
-version = "1.0"
+version = "1.0.1"
 description = "Masked Arrays made simple for CuPy"
 authors = [
     { name = "Pietro Ferraiuolo", email = "pietro.ferraiuolo@inaf.it" }
@@ -21,3 +21,8 @@ dependencies = [
     'numpy',
     'cupy-cuda12x'
 ]
+[project.urls]
+Homepage = "https://github.com/pietroferraiuolo/XuPy"
+
+[tool.setuptools]
+packages = ["xupy"]
