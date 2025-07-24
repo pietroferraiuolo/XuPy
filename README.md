@@ -1,5 +1,4 @@
 # XuPy
-![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/pietroferraiuolo/XuPy/python-test.yaml)
 
 XuPy is a Python package intended to make easier the use numpy and cupy on systems with gpu acceleration.
 It also offers an easy interface for masked arrays on gpu.
