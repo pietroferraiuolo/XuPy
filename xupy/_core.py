@@ -1,3 +1,4 @@
+import builtins
 import numpy as _np
 from xupy import _typings as _t
 from builtins import any as _any
@@ -36,23 +37,69 @@ if _GPU:
         Parameters
         ----------
         data : array-like
-            The data array (will be converted to CuPy array).
+            The input data array (will be converted to CuPy array).
         mask : array-like
-            Boolean mask array (True means masked).
+            Mask. Must be convertible to an array of booleans with the same
+            shape as `data`. True indicates a masked (i.e. invalid) data.
         dtype : data-type, optional
-            Desired data type for the data array.
+            Desired data type for the output array. Defaults to `float32` for optimized
+            GPU performances on computations.
+        fill_value : scalar, optional
+            Value used to fill in the masked values when necessary.
+            If None, if the input `data` is a masked_array then the fill_value
+            will be taken from the masked_array's fill_value attribute,
+            otherwise a default based on the data-type is used.
+        keep_mask : bool, optional
+            Whether to combine `mask` with the mask of the input data, if any
+            (True), or to use only `mask` for the output (False). Default is True.
+        order : {'C', 'F', 'A'}, optional
+            Specify the order of the array.  If order is 'C', then the array
+            will be in C-contiguous order (last-index varies the fastest).
+            If order is 'F', then the returned array will be in
+            Fortran-contiguous order (first-index varies the fastest).
+            If order is 'A' (default), then the returned array may be
+            in any order (either C-, Fortran-contiguous, or even discontiguous),
+            unless a copy is required, in which case it will be C-contiguous.
         """
-        def __init__(self, data:_t.ArrayLike, mask:_t.ArrayLike = None, dtype: _t.DTypeLike = None):
-            self.data = _xp.asarray(data, dtype=dtype if dtype else _xp.float32)
-            if hasattr(data, 'mask') and data.mask is not None and mask is None:
-                mask = _xp.asarray(data.mask, dtype=bool)
-            else:
-                if mask is None:
-                    self.mask = _xp.zeros(self.data.shape, dtype=bool)
+        
+        _print_width = 100
+        _print_width_1d = 1500
+        
+        def __init__(
+            self, 
+            data:_t.ArrayLike, 
+            mask:_t.ArrayLike = None,
+            dtype: _t.DTypeLike = None,
+            fill_value: _t.Scalar = None,
+            keep_mask: bool = True,
+            hard_mask: bool = False,
+            order: _t.Optional[str] = None
+        ):
+            """The constructor"""
+            
+            self._dtype = dtype
+            self.data = _xp.asarray(data, dtype=dtype if dtype else _xp.float32, order=order)
+            
+            if mask is None:
+                if keep_mask is True:
+                    if hasattr(data, 'mask'):
+                        try:
+                            self._mask = _xp.asarray(data.mask, dtype=bool)
+                        except Exception as e:
+                            print(f"Failed to retrieve mask from data: {e}")
+                            self._mask = _xp.zeros(self.data.shape, dtype=bool)
+                    else:
+                        self._mask = _xp.zeros(self.data.shape, dtype=bool)
+
+            self._is_hard_mask = hard_mask
+
+            if fill_value is None:
+                if hasattr(data, 'fill_value'):
+                    self._fill_value = data.fill_value
                 else:
-                    self.mask = _xp.asarray(mask, dtype=bool)
-                if self.mask.shape != self.data.shape:
-                    raise ValueError("Mask shape must match data shape.") 
+                    self._fill_value = _np.ma.default_fill_value(self.data)
+            else:
+                self._fill_value = fill_value
 
         # --- Core Properties ---
         @property
@@ -63,8 +110,8 @@ if _GPU:
         @property
         def dtype(self):
             """Return the data type of the array."""
-            return self.data.dtype
-        
+            return self._dtype
+
         @property
         def size(self) -> int:
             """Return the total number of elements."""
@@ -86,18 +133,84 @@ if _GPU:
             return self.data.flat
 
         def __repr__(self) -> str:
+            """string representation
+            
+            Code adapted from NumPy official API
+            https://github.com/numpy/numpy/blob/main/numpy/ma/core.py
+            """
+            import builtins 
+            
+            prefix = f"xupy_masked_array("
+
+            dtype_needed = (
+                not _np.core.arrayprint.dtype_is_implied(self.dtype) or
+                _np.all(self.mask) or
+                self.size == 0
+            )
+
+            # determine which keyword args need to be shown
+            keys = ['data', 'mask']
+            if dtype_needed:
+                keys.append('dtype')
+
+            # array has only one row (non-column)
+            is_one_row = builtins.all(dim == 1 for dim in self.shape[:-1])
+
+            # choose what to indent each keyword with
+            min_indent = 4
+            if is_one_row:
+                # first key on the same line as the type, remaining keys
+                # aligned by equals
+                indents = {}
+                indents[keys[0]] = prefix
+                for k in keys[1:]:
+                    n = builtins.max(min_indent, len(prefix + keys[0]) - len(k))
+                    indents[k] = ' ' * n
+                prefix = ''  # absorbed into the first indent
+            else:
+                # each key on its own line, indented by two spaces
+                indents = {k: ' ' * min_indent for k in keys}
+                prefix = prefix + '\n'  # first key on the next line
+
+            # format the field values
+            reprs = {}
+            reprs['data'] = _np.array2string(
+                self._insert_masked_print(),
+                separator=", ",
+                prefix=indents['data'] + 'data=',
+                suffix=',')
+            reprs['mask'] = _np.array2string(
+                _xp.asnumpy(self.mask),
+                separator=", ",
+                prefix=indents['mask'] + 'mask=',
+                suffix=',')
+            if dtype_needed:
+                reprs['dtype'] = _np.core.arrayprint.dtype_short_repr(self.dtype)
+
+            # join keys with values and indentations
+            result = ',\n'.join(
+                '{}{}={}'.format(indents[k], k, reprs[k])
+                for k in keys
+            )
+            return prefix + result + ')'
+            
+        def __str__(self) -> str:
+            # data = _xp.asnumpy(self.data)
+            # mask = _xp.asnumpy(self.mask)
+            # display = data.astype(object)
+            # display[mask == True] = "--"
+            return self._insert_masked_print().__str__()
+        
+        def _insert_masked_print(self):
+            """
+            Replace masked values with masked_print_option, casting all innermost
+            dtypes to object.
+            """
             data = _xp.asnumpy(self.data)
             mask = _xp.asnumpy(self.mask)
             display = data.astype(object)
             display[mask] = "--"
-            return f"XupyMaskedArray(\ndata=\n{display},\nmask=\n{mask}\n)"
-        
-        def __str__(self) -> str:
-            data = _xp.asnumpy(self.data)
-            mask = _xp.asnumpy(self.mask)
-            display = data.astype(object)
-            display[mask == True] = "--"
-            return f"{display}"
+            return display
         
         # --- Array Manipulation Methods ---
         def reshape(self, *shape: int) -> "_XupyMaskedArray":
@@ -191,7 +304,7 @@ if _GPU:
             return result
 
         # --- Universal Functions Support ---
-        def apply_ufunc(self, ufunc, *args, **kwargs) -> "_XupyMaskedArray":
+        def apply_ufunc(self, ufunc: object, *args: _t.Any, **kwargs: dict[str, _t.Any]) -> "_XupyMaskedArray":
             """Apply a universal function to the array, respecting masks."""
             # Apply ufunc to data
             result_data = ufunc(self.data, *args, **kwargs)
@@ -309,7 +422,7 @@ if _GPU:
             new_mask = self.mask.copy() if copy else self.mask
             return _XupyMaskedArray(new_data, new_mask, dtype=dtype)
         
-        def tolist(self) -> list:
+        def tolist(self) -> list[_t.Scalar]:
             """Return the array as a nested list."""
             return self.data.tolist()
         
@@ -792,46 +905,113 @@ if _GPU:
 
         def asmarray(self, **kwargs: dict[str,_t.Any]) -> _np.ma.MaskedArray[_t.Any,_t.Any]:
             """Return a NumPy masked array on CPU."""
-            return _np.ma.masked_array(_xp.asnumpy(self.data), mask=_xp.asnumpy(self.mask), **kwargs)
+            dtype = kwargs.get('dtype', self.dtype)
+            if "dtype" in kwargs:
+                kwargs.pop("dtype")
+            return _np.ma.masked_array(_xp.asnumpy(self.data), mask=_xp.asnumpy(self.mask), dtype=dtype, **kwargs)
 
     MaskedArray = _XupyMaskedArray
 
     # --- GPU Memory Management Context Manager ---
     class MemoryContext:
-        """Context manager for efficient GPU memory management."""
-        
+        """Context manager for efficient GPU memory management.
+
+        Improvements:
+        - Uses cupy.cuda.Device context manager for robust device push/pop.
+        - Synchronizes before/after cache clear.
+        - get_memory_info reports device-level and pool-level metrics.
+        """
         def __init__(self, device_id: Optional[int] = None):
             self.device_id = device_id
-            self.original_device = None
-        
+            self._device_ctx = None
+
         def __enter__(self):
             if _GPU and self.device_id is not None:
-                self.original_device = _xp.cuda.runtime.getDevice()
-                _xp.cuda.runtime.setDevice(self.device_id)
+                # use Device context manager to handle restoration safely (supports nesting)
+                self._device_ctx = _xp.cuda.Device(self.device_id)
+                self._device_ctx.__enter__()
             return self
-        
+
         def __exit__(self, exc_type, exc_val, exc_tb):
-            if _GPU and self.original_device is not None:
-                _xp.cuda.runtime.setDevice(self.original_device)
-        
+            if _GPU and self._device_ctx is not None:
+                # restore previous device
+                self._device_ctx.__exit__(exc_type, exc_val, exc_tb)
+                self._device_ctx = None
+
         def clear_cache(self):
-            """Clear GPU memory cache to free up memory."""
-            if _GPU:
+            """Clear GPU memory pools (safely): synchronize, free pools, synchronize."""
+            if not _GPU:
+                return
+            try:
+                # ensure kernels finished
+                _xp.cuda.runtime.deviceSynchronize()
+            except Exception:
+                pass
+
+            try:
                 _xp.get_default_memory_pool().free_all_blocks()
+            except Exception:
+                pass
+
+            try:
                 _xp.get_default_pinned_memory_pool().free_all_blocks()
-        
-        def get_memory_info(self) -> dict:
-            """Get current GPU memory usage information."""
+            except Exception:
+                pass
+
+            try:
+                _xp.cuda.runtime.deviceSynchronize()
+            except Exception:
+                pass
+
+        def get_memory_info(self) -> dict[str,_t.Any]:
+            """Return device-level and pool-level memory information for the target device.
+
+            Returns:
+                {
+                    "device": int,
+                    "total": int,         # total device memory (bytes)
+                    "free": int,          # free device memory (bytes)
+                    "used": int,          # used device memory (bytes) = total - free
+                    "pool_used": int,     # bytes used by CuPy pool
+                    "pool_capacity": int, # pool capacity in bytes
+                    "pool_free": int      # pool free bytes (capacity - used)
+                }
+            """
             if not _GPU:
                 return {"error": "No GPU available"}
-            
+
             try:
+                # choose device to query
+                device_to_query = self.device_id if self.device_id is not None else _xp.cuda.runtime.getDevice()
+
+                # ensure correct device for mem queries
+                # memGetInfo reports for current device, so temporarily set if necessary
+                current = _xp.cuda.runtime.getDevice()
+                if device_to_query != current:
+                    _xp.cuda.runtime.setDevice(device_to_query)
+
+                # device-level info
+                free, total = _xp.cuda.runtime.memGetInfo()
+                used = int(total - free)
+
+                # pool-level info
                 mempool = _xp.get_default_memory_pool()
-                
+                pool_used = int(mempool.used_bytes())
+                pool_capacity = int(mempool.total_bytes())
+                pool_free = int(pool_capacity - pool_used)
+
+                # restore original device if changed
+                if device_to_query != current:
+                    _xp.cuda.runtime.setDevice(current)
+
                 return {
-                    "total": _xp.cuda.runtime.getDeviceProperties(0)["totalGlobalMem"],
-                    "used": mempool.used_bytes(),
-                    "free": mempool.total_bytes() - mempool.used_bytes(),
+                    "device": int(device_to_query),
+                    "total": int(total),
+                    "free": int(free),
+                    "used": int(used),
+                    "pool_used": pool_used,
+                    "pool_capacity": pool_capacity,
+                    "pool_free": pool_free,
                 }
             except Exception as e:
                 return {"error": str(e)}
@@ -864,6 +1044,4 @@ if _GPU:
         XupyMaskedArray
             A masked array with GPU support.
         """
-        if isinstance(data, _np.ndarray):
-            data = _xp.asarray(data, dtype=_xp.float32)
         return _XupyMaskedArray(data, mask, **kwargs)
