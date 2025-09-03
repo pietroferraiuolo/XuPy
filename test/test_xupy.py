@@ -8,7 +8,7 @@ try:
 except ImportError:
     HAS_CUPY = False
 
-from xupy._core import masked_array, MaskedArray
+from xupy._core import masked_array, MaskedArray, zeros, ones, eye, linspace, arange, random, normal, uniform, concatenate, stack, vstack, hstack, split
 
 
 # Helper functions
@@ -356,4 +356,261 @@ class TestMaskPropagation:
         a = masked_array(np.array([1.0, 2.0, 3.0]), np.array([True, False, False]))
         
         result = -a
+        np.testing.assert_array_equal(_to_numpy(result.mask), _to_numpy(a.mask))
+
+
+# Test new array manipulation methods
+class TestArrayManipulation:
+    def test_reshape(self) -> None:
+        """Test array reshaping."""
+        a = masked_array(np.array([[1, 2, 3], [4, 5, 6]]))
+        reshaped = a.reshape(3, 2)
+        assert reshaped.shape == (3, 2)
+        np.testing.assert_array_equal(_to_numpy(reshaped.data), np.array([[1, 2], [3, 4], [5, 6]]))
+    
+    def test_transpose(self) -> None:
+        """Test array transposition."""
+        a = masked_array(np.array([[1, 2], [3, 4]]))
+        transposed = a.transpose()
+        assert transposed.shape == (2, 2)
+        np.testing.assert_array_equal(_to_numpy(transposed.data), np.array([[1, 3], [2, 4]]))
+    
+    def test_flatten(self) -> None:
+        """Test array flattening."""
+        a = masked_array(np.array([[1, 2], [3, 4]]))
+        flattened = a.flatten()
+        assert flattened.shape == (4,)
+        np.testing.assert_array_equal(_to_numpy(flattened.data), np.array([1, 2, 3, 4]))
+    
+    def test_squeeze(self) -> None:
+        """Test array squeezing."""
+        a = masked_array(np.array([[[1], [2]]]))
+        squeezed = a.squeeze()
+        assert squeezed.shape == (2,)
+        np.testing.assert_array_equal(_to_numpy(squeezed.data), np.array([1, 2]))
+    
+    def test_expand_dims(self) -> None:
+        """Test dimension expansion."""
+        a = masked_array(np.array([1, 2, 3]))
+        expanded = a.expand_dims(axis=1)
+        assert expanded.shape == (3, 1)
+        np.testing.assert_array_equal(_to_numpy(expanded.data), np.array([[1], [2], [3]]))
+
+
+# Test new statistical methods
+class TestStatisticalMethods:
+    def test_mean_global(self) -> None:
+        """Test global mean calculation."""
+        a = masked_array(np.array([1, 2, 3, 4, 5]), np.array([False, False, True, False, False]))
+        mean_val = a.mean()
+        expected = (1 + 2 + 4 + 5) / 4  # Excluding masked value 3
+        assert abs(mean_val - expected) < 1e-6
+    
+    def test_sum_global(self) -> None:
+        """Test global sum calculation."""
+        a = masked_array(np.array([1, 2, 3, 4, 5]), np.array([False, False, True, False, False]))
+        sum_val = a.sum()
+        expected = 1 + 2 + 4 + 5  # Excluding masked value 3
+        assert sum_val == expected
+    
+    def test_std_global(self) -> None:
+        """Test global standard deviation calculation."""
+        a = masked_array(np.array([1, 2, 3, 4, 5]), np.array([False, False, True, False, False]))
+        std_val = a.std()
+        valid_data = np.array([1, 2, 4, 5])
+        expected = np.std(valid_data)
+        assert abs(std_val - expected) < 1e-6
+    
+    def test_var_global(self) -> None:
+        """Test global variance calculation."""
+        a = masked_array(np.array([1, 2, 3, 4, 5]), np.array([False, False, True, False, False]))
+        var_val = a.var()
+        valid_data = np.array([1, 2, 4, 5])
+        expected = np.var(valid_data)
+        assert abs(var_val - expected) < 1e-6
+    
+    def test_min_global(self) -> None:
+        """Test global minimum calculation."""
+        a = masked_array(np.array([1, 2, 3, 4, 5]), np.array([False, False, True, False, False]))
+        min_val = a.min()
+        expected = 1  # Minimum of unmasked values
+        assert min_val == expected
+    
+    def test_max_global(self) -> None:
+        """Test global maximum calculation."""
+        a = masked_array(np.array([1, 2, 3, 4, 5]), np.array([False, False, True, False, False]))
+        max_val = a.max()
+        expected = 5  # Maximum of unmasked values
+        assert max_val == expected
+
+
+# Test new utility functions
+class TestUtilityFunctions:
+    def test_zeros(self) -> None:
+        """Test zeros array creation."""
+        a = zeros((3, 3))
+        assert a.shape == (3, 3)
+        assert a.dtype == np.float32
+        np.testing.assert_array_equal(_to_numpy(a.data), np.zeros((3, 3)))
+        np.testing.assert_array_equal(_to_numpy(a.mask), np.zeros((3, 3), dtype=bool))
+    
+    def test_ones(self) -> None:
+        """Test ones array creation."""
+        a = ones((3, 3))
+        assert a.shape == (3, 3)
+        assert a.dtype == np.float32
+        np.testing.assert_array_equal(_to_numpy(a.data), np.ones((3, 3)))
+        np.testing.assert_array_equal(_to_numpy(a.mask), np.zeros((3, 3), dtype=bool))
+    
+    def test_eye(self) -> None:
+        """Test identity matrix creation."""
+        a = eye(3)
+        assert a.shape == (3, 3)
+        np.testing.assert_array_equal(_to_numpy(a.data), np.eye(3))
+        np.testing.assert_array_equal(_to_numpy(a.mask), np.zeros((3, 3), dtype=bool))
+    
+    def test_linspace(self) -> None:
+        """Test linspace array creation."""
+        a = linspace(0, 10, 5)
+        assert a.shape == (5,)
+        np.testing.assert_array_equal(_to_numpy(a.data), np.linspace(0, 10, 5))
+        np.testing.assert_array_equal(_to_numpy(a.mask), np.zeros(5, dtype=bool))
+    
+    def test_arange(self) -> None:
+        """Test arange array creation."""
+        a = arange(0, 10, 2)
+        assert a.shape == (5,)
+        np.testing.assert_array_equal(_to_numpy(a.data), np.arange(0, 10, 2))
+        np.testing.assert_array_equal(_to_numpy(a.mask), np.zeros(5, dtype=bool))
+    
+    def test_random(self) -> None:
+        """Test random array creation."""
+        a = random((3, 3))
+        assert a.shape == (3, 3)
+        assert a.dtype == np.float32
+        # Check that values are between 0 and 1
+        data = _to_numpy(a.data)
+        assert np.all(data >= 0) and np.all(data < 1)
+        np.testing.assert_array_equal(_to_numpy(a.mask), np.zeros((3, 3), dtype=bool))
+    
+    def test_normal(self) -> None:
+        """Test normal distribution array creation."""
+        a = normal(0, 1, (3, 3))
+        assert a.shape == (3, 3)
+        assert a.dtype == np.float32
+        np.testing.assert_array_equal(_to_numpy(a.mask), np.zeros((3, 3), dtype=bool))
+    
+    def test_uniform(self) -> None:
+        """Test uniform distribution array creation."""
+        a = uniform(-1, 1, (3, 3))
+        assert a.shape == (3, 3)
+        assert a.dtype == np.float32
+        # Check that values are between -1 and 1
+        data = _to_numpy(a.data)
+        assert np.all(data >= -1) and np.all(data <= 1)
+        np.testing.assert_array_equal(_to_numpy(a.mask), np.zeros((3, 3), dtype=bool))
+
+
+# Test new array information methods
+class TestArrayInformationMethods:
+    def test_count_masked(self) -> None:
+        """Test counting masked elements."""
+        a = masked_array(np.array([1, 2, 3, 4, 5]), np.array([True, False, True, False, True]))
+        assert a.count_masked() == 3
+    
+    def test_count_unmasked(self) -> None:
+        """Test counting unmasked elements."""
+        a = masked_array(np.array([1, 2, 3, 4, 5]), np.array([True, False, True, False, True]))
+        assert a.count_unmasked() == 2
+    
+    def test_is_masked(self) -> None:
+        """Test checking if array has masked values."""
+        a = masked_array(np.array([1, 2, 3]), np.array([False, False, False]))
+        assert not a.is_masked()
+        
+        b = masked_array(np.array([1, 2, 3]), np.array([False, True, False]))
+        assert b.is_masked()
+    
+    def test_compressed(self) -> None:
+        """Test getting compressed (unmasked) data."""
+        a = masked_array(np.array([1, 2, 3, 4, 5]), np.array([True, False, True, False, True]))
+        compressed = a.compressed()
+        np.testing.assert_array_equal(_to_numpy(compressed), np.array([2, 4]))
+
+
+# Test new copy and conversion methods
+class TestCopyAndConversionMethods:
+    def test_copy(self) -> None:
+        """Test array copying."""
+        a = masked_array(np.array([1, 2, 3]), np.array([False, True, False]))
+        b = a.copy()
+        assert b is not a
+        np.testing.assert_array_equal(_to_numpy(b.data), _to_numpy(a.data))
+        np.testing.assert_array_equal(_to_numpy(b.mask), _to_numpy(a.mask))
+    
+    def test_astype(self) -> None:
+        """Test array type conversion."""
+        a = masked_array(np.array([1, 2, 3]), np.array([False, True, False]))
+        b = a.astype(np.float64)
+        assert b.dtype == np.float64
+        np.testing.assert_array_equal(_to_numpy(b.data), np.array([1., 2., 3.]))
+        np.testing.assert_array_equal(_to_numpy(b.mask), _to_numpy(a.mask))
+    
+    def test_tolist(self) -> None:
+        """Test conversion to list."""
+        a = masked_array(np.array([[1, 2], [3, 4]]))
+        result = a.tolist()
+        assert result == [[1, 2], [3, 4]]
+    
+    def test_item(self) -> None:
+        """Test item extraction."""
+        a = masked_array(np.array([5]))
+        assert a.item() == 5
+        
+        b = masked_array(np.array([[1, 2], [3, 4]]))
+        assert b.item(0, 1) == 2
+
+
+# Test new universal functions
+class TestUniversalFunctions:
+    def test_sqrt(self) -> None:
+        """Test square root function."""
+        a = masked_array(np.array([1, 4, 9, 16]))
+        result = a.sqrt()
+        np.testing.assert_array_equal(_to_numpy(result.data), np.array([1, 2, 3, 4]))
+        np.testing.assert_array_equal(_to_numpy(result.mask), _to_numpy(a.mask))
+    
+    def test_exp(self) -> None:
+        """Test exponential function."""
+        a = masked_array(np.array([0, 1, 2]))
+        result = a.exp()
+        np.testing.assert_array_equal(_to_numpy(result.data), np.exp([0, 1, 2]))
+        np.testing.assert_array_equal(_to_numpy(result.mask), _to_numpy(a.mask))
+    
+    def test_sin(self) -> None:
+        """Test sine function."""
+        a = masked_array(np.array([0, np.pi/2, np.pi]))
+        result = a.sin()
+        np.testing.assert_array_almost_equal(_to_numpy(result.data), np.sin([0, np.pi/2, np.pi]))
+        np.testing.assert_array_equal(_to_numpy(result.mask), _to_numpy(a.mask))
+    
+    def test_floor(self) -> None:
+        """Test floor function."""
+        a = masked_array(np.array([1.1, 2.9, -1.1, -2.9]))
+        result = a.floor()
+        np.testing.assert_array_equal(_to_numpy(result.data), np.array([1, 2, -2, -3]))
+        np.testing.assert_array_equal(_to_numpy(result.mask), _to_numpy(a.mask))
+    
+    def test_ceil(self) -> None:
+        """Test ceiling function."""
+        a = masked_array(np.array([1.1, 2.9, -1.1, -2.9]))
+        result = a.ceil()
+        np.testing.assert_array_equal(_to_numpy(result.data), np.array([2, 3, -1, -2]))
+        np.testing.assert_array_equal(_to_numpy(result.mask), _to_numpy(a.mask))
+    
+    def test_round(self) -> None:
+        """Test round function."""
+        a = masked_array(np.array([1.1, 2.9, -1.1, -2.9]))
+        result = a.round()
+        np.testing.assert_array_equal(_to_numpy(result.data), np.array([1, 3, -1, -3]))
         np.testing.assert_array_equal(_to_numpy(result.mask), _to_numpy(a.mask))
