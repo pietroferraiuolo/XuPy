@@ -32,6 +32,210 @@ if _GPU:
 
     class _XupyMaskedArray:
         """
+        Description
+        ===========
+        A masked-array wrapper around GPU-backed arrays (CuPy) that provides a
+        NumPy-like / numpy.ma-compatible interface while preserving mask semantics
+        and offering convenience methods for common array operations. This class is
+        designed to let you work with large arrays on CUDA-enabled devices using
+        CuPy for numerical computation while retaining the expressive masked-array
+        API familiar from numpy.ma.
+        
+        Key features
+        ------------
+        - Wraps a CuPy ndarray ("data") together with a boolean mask of the same
+            shape ("mask") where True indicates invalid/masked elements.
+        - Lazy/convenient conversion to NumPy masked arrays for CPU-side operations
+            (asmarray()) while performing heavy computation on GPU when possible.
+        - Implements many common array methods and arithmetic/ufunc support with
+            mask propagation semantics compatible with numpy.ma.
+        - Several convenience methods for reshaping, copying, slicing and converting
+            to Python lists / scalars.
+        - Designed for memory-optimized operations: many reductions and logical
+            tests convert to NumPy masked arrays only when necessary.
+        
+        Parameters
+        ----------
+        data : array-like
+            Input array data. Accepted inputs include CuPy arrays, NumPy arrays,
+            Python sequences and numpy.ma.masked_array objects. The data will be
+            converted to the configured GPU array module (CuPy) on construction.
+        mask : array-like, optional
+            Boolean mask indicating invalid elements (True == masked). If omitted
+            and `keep_mask` is True, an existing mask on an input masked_array
+            (if present) will be used; otherwise the mask defaults to all False.
+        dtype : dtype, optional
+            Desired data-type for the stored data. If omitted, a default dtype
+            (commonly float32 for GPU performance) will be used when converting
+            the input data to a GPU array.
+            Value to be used when filling masked elements. If None and the input
+            was a numpy.ma.masked_array, the fill_value of that array will be used.
+            Otherwise a dtype-dependent default is chosen (consistent with numpy.ma).
+            If True (default) and the input `data` is a masked array, combine the
+            input mask with the provided `mask`. If False, the provided `mask` (or
+            default) is used alone.
+        fill_value : scalar, optional
+            Value used to fill in the masked values when necessary.
+            If None, if the input `data` is a masked_array then the fill_value
+            will be taken from the masked_array's fill_value attribute,
+            otherwise a default based on the data-type is used.
+        keep_mask : bool, optional
+            Whether to combine `mask` with the mask of the input data, if any
+            (True), or to use only `mask` for the output (False). Default is True.
+        hard_mask : bool, optional (Not Implemented Yet)
+            If True, indicates that the mask should be treated as an immutable
+            "hard" mask. This influence is primarily semantic in this wrapper but
+            can be used by higher-level logic to avoid accidental unmasking.
+        order : {'C', 'F', 'A', None}, optional
+            Memory order for array conversion if a copy is required. Behaves like
+            numpy.asarray / cupy.asarray ordering.
+
+        Attributes
+        ----------
+        data : cupy.ndarray
+                Underlying GPU array (CuPy). Contains numeric values for both masked
+                and unmasked elements. Access directly to run GPU computations.
+        mask : cupy.ndarray (boolean)
+                Boolean mask array with the same shape as `data`. True means the
+                corresponding element is masked/invalid.
+        dtype : dtype
+                User-specified or inferred dtype used for conversions and some repr
+                logic.
+        fill_value : scalar
+                Default value used when explicitly filling masked entries.
+        _is_hard_mask : bool
+                Internal flag indicating whether the mask is "hard" (semantically
+                immutable).
+
+                
+        Mask semantics and behavior
+        ---------------------------
+        - The mask is always a boolean array aligned with `data`. Users can access
+            and manipulate it directly (e.g. arr.mask |= other.mask) to combine masks.
+        - Mask propagation follows numpy.ma semantics: arithmetic and ufuncs
+            produce masks that reflect invalid operations (e.g. NaNs) and combine
+            masks where appropriate.
+        - Many in-place mutation operations (+=, -=, *=, /=, etc.) will update
+            `data` in place and combine masks when the rhs is another masked array.
+        - Some operations convert to a NumPy masked_array for convenience or to
+            reuse numpy.ma utilities; this conversion copies data from GPU to CPU.
+            Use asmarray() explicitly to force conversion when needed.
+            
+        Common methods (overview)
+        -------------------------
+        - reshape, flatten, ravel, squeeze, expand_dims, transpose, swapaxes,
+            repeat, tile: shape-manipulation methods that preserve masks.
+        - mean, sum, std, var, min, max: reductions implemented by converting to
+            numpy.ma.MaskedArray via asmarray() for accuracy and mask-awareness.
+        - apply_ufunc: apply a (u)func to the data while updating the mask when
+            the result contains NaNs; intended for GPU-backed CuPy ufuncs.
+        - sqrt, exp, log, log10, sin, cos, tan, arcsin, arccos, arctan, sinh,
+            cosh, tanh, floor, ceil, round: convenience wrappers around apply_ufunc.
+        - any, all: logical reductions via asmarray() to respect masked semantics.
+        - count_masked, count_unmasked, is_masked, compressed: mask inspection
+            and extraction utilities.
+        - fill_value(value): write `value` into `data` at masked positions.
+        - copy, astype: copy and cast operations preserving mask.
+        - tolist, item: conversion to Python data structures / scalars.
+        - __getitem__/__setitem__: indexing and slicing preserve mask shape and
+            return MaskedArray views or scalars consistent with numpy.ma rules.
+        - asmarray: convert to numpy.ma.MaskedArray on CPU (copies data and mask
+            from GPU to host memory). Use as the bridge to CPU-only utilities.
+            
+        Arithmetic, ufuncs and operator behavior
+        ----------------------------------------
+        - Binary operations and ufuncs between _XupyMaskedArray instances will
+            generally:
+                - convert operands to GPU arrays when possible,
+                - perform the operation on their `data`, and
+                - combine masks using logical OR (|) to mark any element masked if it
+                    was masked in either operand or if the operation produced NaN.
+        - In-place operators (+=, -=, *=, etc.) modify `data` in place and
+            perform mask combination when the RHS is a masked array.
+        - Reflected operators (radd, rsub, ...) are supported; when either side
+            is a masked array, mask propagation rules are applied.
+        - Some operators are implemented by delegating to asmarray() which can
+            cause a GPU -> CPU transfer. This is a trade-off to retain correct
+            mask-aware behavior; performance-critical code should prefer explicit
+            GPU-safe ufuncs when possible.
+            
+        Performance and memory considerations
+        -------------------------------------
+        - The object is optimized for GPU computation by using CuPy arrays for
+            numerical work. However, some convenience operations (e.g., many
+            reductions and string formatting in __repr__) convert to NumPy masked
+            arrays on the host, which involves a device->host copy.
+        - Avoid calling asmarray() or methods that rely on it (mean, sum, std,
+            min, max, any, all, etc.) in tight GPU-bound loops unless you intend
+            to move data to CPU.
+        - Use apply_ufunc and the provided GPU ufunc wrappers (sqrt, exp, sin,
+            etc.) to keep computation on the device and minimize data transfer.
+        - Copying and type casting can allocate additional GPU memory; use views
+            or in-place methods when memory is constrained.
+            
+        Representation and printing
+        ---------------------------
+        - __repr__ attempts to follow numpy.ma formatting conventions while
+            displaying masked elements as a placeholder (e.g., "--") by converting
+            the minimal necessary data to the host for a readable representation.
+        - __str__ delegates to a masked-display conversion that replaces masked
+            entries with a human-readable token. These operations involve a
+            transfer from GPU to CPU.
+            
+        Interoperability with numpy.ma and CuPy
+        --------------------------------------
+        - asmarray() returns a numpy.ma.MaskedArray with the data and mask copied
+            to host memory; this is useful for interoperability with NumPy APIs
+            that expect masked arrays.
+        - When interacting with NumPy or numpy.ma masked arrays passed as inputs,
+            _XupyMaskedArray will honor existing masks (subject to keep_mask) and
+            attempt to preserve semantics on the GPU.
+        - When mixing with plain NumPy ndarrays or scalars, values are promoted
+            to CuPy arrays for computation, and mask behavior follows numpy.ma rules
+            (masked elements propagate).
+            
+        Examples
+        --------
+        Create from a NumPy array with a mask:
+        >>> data = np.array([1.0, 2.0, np.nan, 4.0])
+        >>> mask = np.isnan(data)
+        >>> m = _XupyMaskedArray(data, mask)
+        >>> m.count_masked()
+        1
+        >>> m + 1  # arithmetic preserves mask
+        Use GPU ufuncs without moving data to CPU:
+        >>> m_gpu = _XupyMaskedArray(cupy.array([0.0, 1.0, -1.0]))
+        >>> m_gpu.sqrt()  # computes on GPU via apply_ufunc
+        Convert to NumPy masked array for CPU-only operations:
+        >>> ma = m_gpu.asmarray()
+        >>> ma.mean()
+        
+        Notes and caveats
+        -----------------
+        - The wrapper is not a drop-in replacement for numpy.ma in every edge
+            case; it attempts to mirror numpy.ma semantics where feasible while
+            leveraging GPU acceleration.
+        - Some methods intentionally convert to numpy.ma.MaskedArray for semantic
+            fidelity; these are clearly documented and an explicit asmarray() call
+            is recommended when you want to guarantee a CPU-side masked array.
+        - Users should be mindful of device-host memory transfers when mixing
+            GPU operations and mask-aware CPU computations.
+            
+        Extensibility
+        -------------
+        - The class is intended to be extended with additional ufunc wrappers,
+            GPU-optimized masked reductions, and richer I/O/serialization support.
+        - Because mask handling is explicit and mask arrays are plain boolean
+            arrays, users can implement custom mask logic (e.g., hierarchical masks,
+            multi-state masks) on top of this wrapper.
+        See also
+        --------
+        numpy.ma.MaskedArray : Reference implementation and semantics for masked arrays.
+        cupy.ndarray : GPU-backed numerical arrays used as the data store.
+        
+        ----
+        
+        
         A comprehensive masked array wrapper for CuPy arrays with NumPy-like interface.
 
         Parameters
@@ -61,10 +265,10 @@ if _GPU:
             in any order (either C-, Fortran-contiguous, or even discontiguous),
             unless a copy is required, in which case it will be C-contiguous.
         """
-        
+
         _print_width = 100
         _print_width_1d = 1500
-        
+
         def __init__(
             self, 
             data:_t.ArrayLike, 
@@ -76,10 +280,10 @@ if _GPU:
             order: _t.Optional[str] = None
         ):
             """The constructor"""
-            
+
             self._dtype = dtype
             self.data = _xp.asarray(data, dtype=dtype if dtype else _xp.float32, order=order)
-            
+
             if mask is None:
                 if keep_mask is True:
                     if hasattr(data, 'mask'):
@@ -90,6 +294,8 @@ if _GPU:
                             self._mask = _xp.zeros(self.data.shape, dtype=bool)
                     else:
                         self._mask = _xp.zeros(self.data.shape, dtype=bool)
+            else:
+                self._mask = _xp.asarray(mask, dtype=bool)
 
             self._is_hard_mask = hard_mask
 
@@ -103,10 +309,20 @@ if _GPU:
 
         # --- Core Properties ---
         @property
+        def mask(self) -> _xp.ndarray:
+            """Return the mask array."""
+            return self._mask
+
+        @mask.setter
+        def mask(self, value: _xp.ndarray) -> None:
+            """Set the mask array."""
+            self._mask = value
+
+        @property
         def shape(self) -> tuple[int, ...]:
             """Return the shape of the array."""
             return self.data.shape
-        
+
         @property
         def dtype(self):
             """Return the data type of the array."""
@@ -116,17 +332,17 @@ if _GPU:
         def size(self) -> int:
             """Return the total number of elements."""
             return self.data.size
-        
+
         @property
         def ndim(self) -> int:
             """Return the number of dimensions."""
             return self.data.ndim
-        
+
         @property
         def T(self):
             """Return the transpose of the array."""
-            return _XupyMaskedArray(self.data.T, self.mask.T)
-        
+            return _XupyMaskedArray(self.data.T, self._mask.T)
+
         @property
         def flat(self):
             """Return a flat iterator over the array."""
@@ -144,7 +360,7 @@ if _GPU:
 
             dtype_needed = (
                 not _np.core.arrayprint.dtype_is_implied(self.dtype) or
-                _np.all(self.mask) or
+                _np.all(self._mask) or
                 self.size == 0
             )
 
@@ -180,7 +396,7 @@ if _GPU:
                 prefix=indents['data'] + 'data=',
                 suffix=',')
             reprs['mask'] = _np.array2string(
-                _xp.asnumpy(self.mask),
+                _xp.asnumpy(self._mask),
                 separator=", ",
                 prefix=indents['mask'] + 'mask=',
                 suffix=',')
@@ -196,7 +412,7 @@ if _GPU:
             
         def __str__(self) -> str:
             # data = _xp.asnumpy(self.data)
-            # mask = _xp.asnumpy(self.mask)
+            # mask = _xp.asnumpy(self._mask)
             # display = data.astype(object)
             # display[mask == True] = "--"
             return self._insert_masked_print().__str__()
@@ -207,7 +423,7 @@ if _GPU:
             dtypes to object.
             """
             data = _xp.asnumpy(self.data)
-            mask = _xp.asnumpy(self.mask)
+            mask = _xp.asnumpy(self._mask)
             display = data.astype(object)
             display[mask] = "--"
             return display
@@ -216,13 +432,13 @@ if _GPU:
         def reshape(self, *shape: int) -> "_XupyMaskedArray":
             """Return a new array with the same data but a new shape."""
             new_data = self.data.reshape(*shape)
-            new_mask = self.mask.reshape(*shape)
+            new_mask = self._mask.reshape(*shape)
             return _XupyMaskedArray(new_data, new_mask)
         
         def flatten(self, order: str = 'C') -> "_XupyMaskedArray":
             """Return a copy of the array collapsed into one dimension."""
             new_data = self.data.flatten(order=order)
-            new_mask = self.mask.flatten(order=order)
+            new_mask = self._mask.flatten(order=order)
             return _XupyMaskedArray(new_data, new_mask)
         
         def ravel(self, order: str = 'C') -> "_XupyMaskedArray":
@@ -232,37 +448,37 @@ if _GPU:
         def squeeze(self, axis: Optional[tuple[int, ...]] = None) -> "_XupyMaskedArray":
             """Remove single-dimensional entries from the shape of an array."""
             new_data = self.data.squeeze(axis=axis)
-            new_mask = self.mask.squeeze(axis=axis)
+            new_mask = self._mask.squeeze(axis=axis)
             return _XupyMaskedArray(new_data, new_mask)
         
         def expand_dims(self, axis: int) -> "_XupyMaskedArray":
             """Expand the shape of an array by inserting a new axis."""
             new_data = _xp.expand_dims(self.data, axis=axis)
-            new_mask = _xp.expand_dims(self.mask, axis=axis)
+            new_mask = _xp.expand_dims(self._mask, axis=axis)
             return _XupyMaskedArray(new_data, new_mask)
         
         def transpose(self, *axes: int) -> "_XupyMaskedArray":
             """Return an array with axes transposed."""
             new_data = self.data.transpose(*axes)
-            new_mask = self.mask.transpose(*axes)
+            new_mask = self._mask.transpose(*axes)
             return _XupyMaskedArray(new_data, new_mask)
         
         def swapaxes(self, axis1: int, axis2: int) -> "_XupyMaskedArray":
             """Return an array with axis1 and axis2 interchanged."""
             new_data = self.data.swapaxes(axis1, axis2)
-            new_mask = self.mask.swapaxes(axis1, axis2)
+            new_mask = self._mask.swapaxes(axis1, axis2)
             return _XupyMaskedArray(new_data, new_mask)
         
         def repeat(self, repeats: Union[int, _t.ArrayLike], axis: Optional[int] = None) -> "_XupyMaskedArray":
             """Repeat elements of an array."""
             new_data = _xp.repeat(self.data, repeats, axis=axis)
-            new_mask = _xp.repeat(self.mask, repeats, axis=axis)
+            new_mask = _xp.repeat(self._mask, repeats, axis=axis)
             return _XupyMaskedArray(new_data, new_mask)
         
         def tile(self, reps: Union[int, tuple[int, ...]]) -> "_XupyMaskedArray":
             """Construct an array by repeating A the number of times given by reps."""
             new_data = _xp.tile(self.data, reps)
-            new_mask = _xp.tile(self.mask, reps)
+            new_mask = _xp.tile(self._mask, reps)
             return _XupyMaskedArray(new_data, new_mask)
 
 
@@ -308,7 +524,7 @@ if _GPU:
             """Apply a universal function to the array, respecting masks."""
             # Apply ufunc to data
             result_data = ufunc(self.data, *args, **kwargs)
-            result_mask = _np.where(_np.isnan(result_data), True, self.mask)
+            result_mask = _np.where(_np.isnan(result_data), True, self._mask)
             # Preserve mask
             return _XupyMaskedArray(result_data, result_mask)
         
@@ -391,35 +607,35 @@ if _GPU:
         
         def count_masked(self) -> int:
             """Return the number of masked elements."""
-            return int(_xp.sum(self.mask))
+            return int(_xp.sum(self._mask))
         
         def count_unmasked(self) -> int:
             """Return the number of unmasked elements."""
-            return int(_xp.sum(~self.mask))
+            return int(_xp.sum(~self._mask))
         
         def is_masked(self) -> bool:
             """Return True if the array has any masked values."""
-            return bool(_xp.any(self.mask))
+            return bool(_xp.any(self._mask))
         
         def compressed(self) -> _xp.ndarray:
             """Return all the non-masked data as a 1-D array."""
-            return self.data[~self.mask]
+            return self.data[~self._mask]
         
         def fill_value(self, value: _t.Scalar) -> None:
             """Set the fill value for masked elements."""
-            self.data[self.mask] = value
+            self.data[self._mask] = value
 
 
         # --- Copy and Conversion Methods ---
         def copy(self, order: str = 'C') -> "_XupyMaskedArray":
             """Return a copy of the array."""
-            return _XupyMaskedArray(self.data.copy(order=order), self.mask.copy(order=order))
+            return _XupyMaskedArray(self.data.copy(order=order), self._mask.copy(order=order))
         
         def astype(self, dtype: _t.DTypeLike, order: str = 'K', casting: str = 'unsafe', 
                   subok: bool = True, copy: bool = True) -> "_XupyMaskedArray":
             """Copy of the array, cast to a specified type."""
             new_data = self.data.astype(dtype, order=order, casting=casting, subok=subok, copy=copy)
-            new_mask = self.mask.copy() if copy else self.mask
+            new_mask = self._mask.copy() if copy else self._mask
             return _XupyMaskedArray(new_data, new_mask, dtype=dtype)
         
         def tolist(self) -> list[_t.Scalar]:
@@ -434,6 +650,10 @@ if _GPU:
 
 
         # --- Arithmetic Operators ---
+        # TODO: Add to all the methods the ability to handle 
+        # other as `numpy.ndarray`. Convert it to a cupy array and
+        # then perform the operation.
+        
         def __radd__(self, other: object) -> "_XupyMaskedArray":
             """
             Reflected element-wise addition with mask propagation.
@@ -460,7 +680,7 @@ if _GPU:
             """
             if isinstance(other, _XupyMaskedArray):
                 self.data += other.data
-                self.mask |= other.mask
+                self._mask |= other._mask
             else:
                 self.data += other
             return self
@@ -491,7 +711,7 @@ if _GPU:
             """
             if isinstance(other, _XupyMaskedArray):
                 self.data -= other.data
-                self.mask |= other.mask
+                self._mask |= other._mask
             else:
                 self.data -= other
             return self
@@ -522,7 +742,7 @@ if _GPU:
             """
             if isinstance(other, _XupyMaskedArray):
                 self.data *= other.data
-                self.mask |= other.mask
+                self._mask |= other._mask
             else:
                 self.data *= other
             return self
@@ -553,7 +773,7 @@ if _GPU:
             """
             if isinstance(other, _XupyMaskedArray):
                 self.data /= other.data
-                self.mask |= other.mask
+                self._mask |= other._mask
             else:
                 self.data /= other
             return self
@@ -584,7 +804,7 @@ if _GPU:
             """
             if isinstance(other, _XupyMaskedArray):
                 self.data //= other.data
-                self.mask |= other.mask
+                self._mask |= other._mask
             else:
                 self.data //= other
             return self
@@ -615,7 +835,7 @@ if _GPU:
             """
             if isinstance(other, _XupyMaskedArray):
                 self.data %= other.data
-                self.mask |= other.mask
+                self._mask |= other._mask
             else:
                 self.data %= other
             return self
@@ -646,7 +866,7 @@ if _GPU:
             """
             if isinstance(other, _XupyMaskedArray):
                 self.data **= other.data
-                self.mask |= other.mask
+                self._mask |= other._mask
             else:
                 self.data **= other
             return self
@@ -666,13 +886,18 @@ if _GPU:
             _XupyMaskedArray
                 The result of the matrix multiplication with combined mask.
             """
-            if isinstance(other, (_XupyMaskedArray, _np.ma.masked_array)):
+            if isinstance(other, _XupyMaskedArray):
                 result_data = self.data @ other.data
-                result_mask = self.mask | other.mask
+                result_mask = self._mask | other._mask
+            elif isinstance(other, _np.ma.masked_array):
+                other_data = _xp.asarray(other.data, dtype=self.dtype)
+                other_mask = _xp.asarray(other.mask, dtype=bool)
+                result_data = self.data @ other_data
+                result_mask = self._mask | other_mask
             else:
                 result_data = self.data @ other
-                result_mask = self.mask
-            return _XupyMaskedArray(result_data, result_mask)
+                result_mask = self._mask
+            return _XupyMaskedArray(result_data, mask=result_mask)
 
         def __rmatmul__(self, other: object) -> "_XupyMaskedArray":
             """
@@ -682,7 +907,7 @@ if _GPU:
                 other = other.asmarray()
             own = self.asmarray()
             result = other @ own
-            return _XupyMaskedArray(result.data, result.mask)
+            return _XupyMaskedArray(result.data, mask=result.mask)
 
         def __imatmul__(self, other: object) -> "_XupyMaskedArray":
             """
@@ -700,7 +925,12 @@ if _GPU:
             """
             if isinstance(other, _XupyMaskedArray):
                 self.data = self.data @ other.data
-                self.mask = self.mask | other.mask
+                self._mask = self._mask | other._mask
+            elif isinstance(other, _np.ma.masked_array):
+                other_data = _xp.asarray(other.data, dtype=self.dtype)
+                other_mask = _xp.asarray(other.mask, dtype=bool)
+                self.data = self.data @ other_data
+                self._mask = self._mask | other_mask
             else:
                 self.data = self.data @ other
                 # mask unchanged
@@ -712,21 +942,21 @@ if _GPU:
             Element-wise negation with mask propagation.
             """
             result = -self.data
-            return _XupyMaskedArray(result, self.mask)
+            return _XupyMaskedArray(result, self._mask)
 
         def __pos__(self) -> "_XupyMaskedArray":
             """
             Element-wise unary plus with mask propagation.
             """
             result = +self.data
-            return _XupyMaskedArray(result, self.mask)
+            return _XupyMaskedArray(result, self._mask)
 
         def __abs__(self) -> "_XupyMaskedArray":
             """
             Element-wise absolute value with mask propagation.
             """
             result = _xp.abs(self.data)
-            return _XupyMaskedArray(result, self.mask)
+            return _XupyMaskedArray(result, self._mask)
 
         # --- Comparison Operators (optional for mask logic) ---
         def __eq__(self, other: object) -> _xp.ndarray:
@@ -895,7 +1125,7 @@ if _GPU:
                 The indexed masked array or scalar value if the result is 0-dimensional.
             """
             data_item = self.data[item]
-            mask_item = self.mask[item]
+            mask_item = self._mask[item]
             # If the result is a scalar, return a masked value
             if data_item.shape == ():
                 if mask_item:
@@ -908,7 +1138,7 @@ if _GPU:
             dtype = kwargs.get('dtype', self.dtype)
             if "dtype" in kwargs:
                 kwargs.pop("dtype")
-            return _np.ma.masked_array(_xp.asnumpy(self.data), mask=_xp.asnumpy(self.mask), dtype=dtype, **kwargs)
+            return _np.ma.masked_array(_xp.asnumpy(self.data), mask=_xp.asnumpy(self._mask), dtype=dtype, **kwargs)
 
     MaskedArray = _XupyMaskedArray
 
