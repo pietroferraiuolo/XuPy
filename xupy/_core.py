@@ -29,6 +29,8 @@ except Exception as err:
 
 
 if _GPU:
+    
+    np = _np
 
     class _XupyMaskedArray:
         """
@@ -1275,3 +1277,8 @@ if _GPU:
             A masked array with GPU support.
         """
         return _XupyMaskedArray(data, mask, **kwargs)
+    
+else:
+    
+    masked_array = _np.ma.masked_array
+    MaskedArray = _np.ma.MaskedArray
