@@ -21,16 +21,11 @@ class CustomInstall(install):
 setup(
     name="XuPy",
     version=about['__version__'],
-    description="Masked Arrays made simple for CuPy",
+    description="GPU Accelerated masked arrays with automatic handling of CPU and GPU arrays.",
     author="Pietro Ferraiuolo",
     author_email="pietro.ferraiuolo@inaf.it",
     packages=["xupy"],
     install_requires=["numpy"],
-    classifiers=[
-        "Programming Language :: Python :: 3",
-        "License :: OSI Approved :: MIT License",
-        "Operating System :: OS Independent"
-    ],
     python_requires=">=3.10",
     cmdclass={
         'install': CustomInstall,
