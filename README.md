@@ -4,14 +4,14 @@ XuPy is a comprehensive Python package that provides GPU-accelerated masked arra
 
 ## Features
 
-- **🚀 GPU Acceleration**: Automatic GPU detection with CuPy fallback to NumPy
-- **🎭 Masked Arrays**: Full support for masked arrays with GPU acceleration
-- **📊 Statistical Functions**: Comprehensive statistical operations (mean, std, var, min, max, etc.)
-- **🔧 Array Manipulation**: Reshape, transpose, squeeze, expand_dims, and more
-- **📐 Mathematical Functions**: Trigonometric, exponential, logarithmic, and rounding functions
-- **🎲 Random Generation**: Various random number generators (normal, uniform, etc.)
-- **🔄 Universal Functions**: Support for applying any CuPy/NumPy ufunc with mask preservation
-- **📈 Performance**: Optimized for large-scale data processing on GPU
+- **GPU Acceleration**: Automatic GPU detection with CuPy fallback to NumPy
+- **Masked Arrays**: Full support for masked arrays with GPU acceleration
+- **Statistical Functions**: Comprehensive statistical operations (mean, std, var, min, max, etc.)
+- **Array Manipulation**: Reshape, transpose, squeeze, expand_dims, and more
+- **Mathematical Functions**: Trigonometric, exponential, logarithmic, and rounding functions
+- **Random Generation**: Various random number generators (normal, uniform, etc.)
+- **Universal Functions**: Support for applying any CuPy/NumPy ufunc with mask preservation
+- **Performance**: Optimized for large-scale data processing on GPU
 
 ## Installation
 
@@ -224,9 +224,71 @@ XuPy maintains high compatibility with NumPy's masked array interface while leve
 - **Proper mask propagation** - Maintains mask integrity across all operations
 - **GPU memory management** - Context manager for efficient memory usage
 
-## Contributing
+## GPU Memory Management
 
-Contributions are welcome! Please feel free to submit issues, feature requests, or pull requests.
+XuPy includes an advanced `MemoryContext` class for efficient GPU memory management:
+
+```python
+import xupy as xp
+
+# Basic usage with automatic cleanup
+with xp.MemoryContext() as ctx:
+    # GPU operations
+    data = xp.random.normal(0, 1, (10000, 10000))
+    result = data.mean()
+# Memory automatically cleaned up on exit
+
+# Advanced features
+with xp.MemoryContext(memory_threshold=0.8, auto_cleanup=True) as ctx:
+    # Monitor memory usage
+    mem_info = ctx.get_memory_info()
+    print(f"GPU Memory: {mem_info['used'] / (1024**3):.2f} GB")
+    
+    # Aggressive cleanup when needed
+    if ctx.check_memory_pressure():
+        ctx.aggressive_cleanup()
+    
+    # Emergency cleanup for critical situations
+    ctx.emergency_cleanup()
+```
+
+### MemoryContext Features
+
+- **Automatic Cleanup**: Memory freed automatically when exiting context
+- **Memory Monitoring**: Real-time tracking of GPU memory usage
+- **Pressure Detection**: Automatic cleanup when memory usage is high
+- **Aggressive Cleanup**: Force garbage collection and cache clearing
+- **Emergency Cleanup**: Nuclear option for out-of-memory situations
+- **Object Tracking**: Track GPU objects for proper cleanup
+- **Memory History**: Keep history of memory usage over time
+
+Run the memory management demo:
+
+```bash
+python memory_demo.py
+```
+
+## Examples
+
+Run the comprehensive examples script to see XuPy in action:
+
+```bash
+python examples.py
+```
+
+This script demonstrates:
+
+- GPU detection and information
+- Basic masked array operations
+- GPU-accelerated computations
+- Mathematical functions
+- Memory management
+- Scientific computing use cases
+- Performance comparisons
+
+## Documentation
+
+For detailed documentation, including comprehensive API reference and advanced usage examples, see [docs.md](docs.md).
 
 ## License
 
