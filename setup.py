@@ -16,7 +16,7 @@ class CustomInstall(install):
 
 setup(
     name="XuPy",
-    version="1.0.6",
+    version="1.1.0",
     description="Masked Arrays made simple for CuPy",
     author="Pietro Ferraiuolo",
     author_email="pietro.ferraiuolo@inaf.it",

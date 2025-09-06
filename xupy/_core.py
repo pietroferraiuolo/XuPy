@@ -9,6 +9,8 @@ _GPU = False
 
 __check__.xupy_init()
 
+del __check__
+
 try:
     from cupy import *              # type: ignore
     import cupy as _xp
