@@ -16,7 +16,7 @@ XuPy is a comprehensive Python package that provides GPU-accelerated masked arra
 ## Installation
 
 ```bash
-pip install .
+pip install xupy
 ```
 
 ## Quick Start
