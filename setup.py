@@ -1,5 +1,6 @@
 from setuptools import setup
 from setuptools.command.install import install
+from xupy.__version__ import __version__
 
 class CustomInstall(install):
     def run(self):
@@ -16,7 +17,7 @@ class CustomInstall(install):
 
 setup(
     name="XuPy",
-    version="1.1.0",
+    version=__version__,
     description="Masked Arrays made simple for CuPy",
     author="Pietro Ferraiuolo",
     author_email="pietro.ferraiuolo@inaf.it",
