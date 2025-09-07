@@ -40,6 +40,8 @@ except Exception as err:
 
 if _GPU:
     
+    float = _xp.float32
+    double = _xp.float64
     np = _np
 
     class _XupyMaskedArray:
@@ -1672,5 +1674,7 @@ if _GPU:
     
 else:
     
+    float = double = _np.float64
+
     masked_array = _np.ma.masked_array
     MaskedArray = _np.ma.MaskedArray

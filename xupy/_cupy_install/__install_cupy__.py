@@ -50,41 +50,41 @@ def get_cupy_package(cuda_version):
     elif cuda_version.startswith("12."):
         return "cupy-cuda12x"
     else:
-        print(f"Unsupported CUDA version: {cuda_version}")
+        print(f"       Unsupported CUDA version: {cuda_version}")
         return None
 
 
 def install_package(package):
     """Install the package using pip."""
-    print(f"Installing {package}...")
+    print(f"       Installing {package}...")
     success, stdout, stderr = run_command(f"pip install {package}")
     if success:
-        print(f"Successfully installed {package}")
+        print(f"       Successfully installed {package}")
     else:
-        print(f"Failed to install {package}")
-        print("stdout:", stdout)
-        print("stderr:", stderr)
+        print(f"       Failed to install {package}")
+        print("       stdout:", stdout)
+        print("       stderr:", stderr)
         return False
     return True
 
 
 def main():
-    print("Checking for CUDA installation...")
+    print("\n       Checking for CUDA installation...")
     cuda_version = get_cuda_version()
     if cuda_version:
-        print(f"CUDA version detected: {cuda_version}")
+        print(f"       CUDA version detected: {cuda_version}")
         cupy_package = get_cupy_package(cuda_version)
         if cupy_package:
             if install_package(cupy_package):
-                print("CuPy installation completed successfully.")
+                print("       CuPy installation completed successfully.")
             else:
-                print("CuPy installation failed.")
+                print("       CuPy installation failed.")
                 sys.exit(1)
         else:
-            print("Could not determine appropriate CuPy package.")
+            print("       Could not determine appropriate CuPy package.")
             sys.exit(1)
     else:
-        print("CUDA not detected. Skipping CuPy installation.")
+        print("       CUDA not detected. Skipping CuPy installation.")
         sys.exit(0)
 
 
