@@ -1678,3 +1678,11 @@ else:
 
     masked_array = _np.ma.masked_array
     MaskedArray = _np.ma.MaskedArray
+
+    def asnumpy(array: _t.NDArray[_t.Any]) -> _np.ndarray:
+        """
+        Placeholder function for asnumpy when GPU is not available.
+        """
+        if isinstance(array, _np.ma.MaskedArray):
+            return array.data
+        return array
