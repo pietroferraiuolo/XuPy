@@ -10,11 +10,13 @@ Scalar = Union[int, float, complex]
 class XupyMaskedArrayProtocol(Protocol):
     """Protocol defining the interface for XuPy masked arrays."""
     data: Array
-    mask: Array
+    _mask: Array
     
     def __init__(self, data: ArrayLike, mask: Optional[ArrayLike] = None, dtype: Optional[DTypeLike] = None) -> None: ...
     
     # Core properties
+    @property
+    def mask(self) -> Array: ...
     @property
     def shape(self) -> tuple[int, ...]: ...
     @property

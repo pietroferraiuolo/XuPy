@@ -1,8 +1,7 @@
-import builtins
 import numpy as _np
-from xupy import _typings as _t
-from typing import Optional, Union
-import time
+import time as _time
+import builtins as _b
+from xupy import typings as _t
 from ._cupy_install import __check_availability__ as __check__
 
 _GPU = False
@@ -404,11 +403,20 @@ if _GPU:
 
             # format the field values
             reprs = {}
+
+            # Determine precision based on dtype
+            the_type = _np.dtype(self.dtype)
+            if the_type.kind == 'f':  # Floating-point
+                precision = 6 if the_type.itemsize == 4 else 15  # float32 vs float64
+            else:
+                precision = None  # Default for integers, etc.
+            
             reprs['data'] = _np.array2string(
                 self._insert_masked_print(),
                 separator=", ",
                 prefix=indents['data'] + 'data=',
-                suffix=',')
+                suffix=',',
+                precision=precision)
             reprs['mask'] = _np.array2string(
                 _xp.asnumpy(self._mask),
                 separator=", ",
@@ -423,7 +431,7 @@ if _GPU:
                 for k in keys
             )
             return prefix + result + ')'
-            
+
         def __str__(self) -> str:
             # data = _xp.asnumpy(self.data)
             # mask = _xp.asnumpy(self._mask)
@@ -459,7 +467,7 @@ if _GPU:
             """Return a flattened array."""
             return self.flatten(order=order)
         
-        def squeeze(self, axis: Optional[tuple[int, ...]] = None) -> "_XupyMaskedArray":
+        def squeeze(self, axis: _t.Optional[tuple[int, ...]] = None) -> "_XupyMaskedArray":
             """Remove single-dimensional entries from the shape of an array."""
             new_data = self.data.squeeze(axis=axis)
             new_mask = self._mask.squeeze(axis=axis)
@@ -482,14 +490,14 @@ if _GPU:
             new_data = self.data.swapaxes(axis1, axis2)
             new_mask = self._mask.swapaxes(axis1, axis2)
             return _XupyMaskedArray(new_data, new_mask)
-        
-        def repeat(self, repeats: Union[int, _t.ArrayLike], axis: Optional[int] = None) -> "_XupyMaskedArray":
+
+        def repeat(self, repeats: _t.Union[int, _t.ArrayLike], axis: _t.Optional[int] = None) -> "_XupyMaskedArray":
             """Repeat elements of an array."""
             new_data = _xp.repeat(self.data, repeats, axis=axis)
             new_mask = _xp.repeat(self._mask, repeats, axis=axis)
             return _XupyMaskedArray(new_data, new_mask)
-        
-        def tile(self, reps: Union[int, tuple[int, ...]]) -> "_XupyMaskedArray":
+
+        def tile(self, reps: _t.Union[int, tuple[int, ...]]) -> "_XupyMaskedArray":
             """Construct an array by repeating A the number of times given by reps."""
             new_data = _xp.tile(self.data, reps)
             new_mask = _xp.tile(self._mask, reps)
@@ -1204,7 +1212,7 @@ if _GPU:
         - Emergency cleanup for out-of-memory situations
         """
 
-        def __init__(self, device_id: Optional[int] = None, auto_cleanup: bool = True,
+        def __init__(self, device_id: _t.Optional[int] = None, auto_cleanup: bool = True,
                      memory_threshold: float = 0.9, monitor_interval: float = 1.0):
             """
             Initialize the memory context manager.
@@ -1236,7 +1244,7 @@ if _GPU:
 
         def __enter__(self):
             """Enter the memory context."""
-            self._start_time = time.time()
+            self._start_time = _time.time()
 
             if _GPU:
                 # Store original device
@@ -1279,7 +1287,7 @@ if _GPU:
 
                 # Final memory report
                 if self._start_time:
-                    duration = time.time() - self._start_time
+                    duration = _time.time() - self._start_time
                     final_mem = self.get_memory_info()
                     if "used" in final_mem:
                         memory_delta = final_mem["used"] - self._initial_memory
@@ -1364,7 +1372,7 @@ if _GPU:
             # Clear memory pools multiple times with forced deallocation
             for _ in range(3):
                 self.clear_cache()
-                time.sleep(0.01)
+                _time.sleep(0.01)
 
             # Try to free unused memory more aggressively
             try:
@@ -1439,7 +1447,7 @@ if _GPU:
                 except Exception:
                     pass
                 self.clear_cache()
-                time.sleep(0.05)
+                _time.sleep(0.05)
 
             # Try to reset the device (nuclear option)
             try:
@@ -1529,7 +1537,7 @@ if _GPU:
 
                 # Store in history
                 self._memory_history.append({
-                    "timestamp": time.time(),
+                    "timestamp": _time.time(),
                     "used": used,
                     "free": free
                 })
@@ -1576,9 +1584,9 @@ if _GPU:
             if measurements:
                 used_values = [m.get("used", 0) for m in measurements if "used" in m]
                 if used_values:
-                    min_used = builtins.min(used_values)
-                    max_used = builtins.max(used_values)
-                    avg_used = builtins.sum(used_values) / len(used_values)
+                    min_used = _b.min(used_values)
+                    max_used = _b.max(used_values)
+                    avg_used = _b.sum(used_values) / len(used_values)
 
                     print(f"[MemoryContext] Memory monitoring summary:")
                     print(f"  Min: {min_used / (1024**3):.2f} GB")
