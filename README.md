@@ -1,5 +1,7 @@
 # XuPy
 
+![logo](docs/logo.png)
+
 XuPy is a comprehensive Python package that provides GPU-accelerated masked arrays and NumPy-compatible functionality using CuPy. It automatically handles GPU/CPU fallback and offers an intuitive interface for scientific computing with masked data.
 
 ## Features
