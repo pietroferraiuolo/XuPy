@@ -36,12 +36,14 @@ except Exception as err:
     _GPU = False  # just to be sure ...
     from numpy import *         # type: ignore
 
+on_gpu = _GPU
 
 if _GPU:
     
     float = _xp.float32
     double = _xp.float64
     np = _np
+    npma = _np.ma
 
     class _XupyMaskedArray:
         """
