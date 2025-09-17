@@ -11,8 +11,9 @@ __check__.xupy_init()
 del __check__
 
 try:
-    from cupy import *              # type: ignore
+    from cupy import *  # type: ignore
     import cupy as _xp
+
     n_gpus = _xp.cuda.runtime.getDeviceCount()
     if n_gpus > 1:
         gpus = {}
@@ -21,42 +22,45 @@ try:
 """
         for g in range(n_gpus):
             gpu = _xp.cuda.runtime.getDeviceProperties(g)
-            gpu_name = gpu['name'].decode()
+            gpu_name = gpu["name"].decode()
             gpus[g] = gpu_name
             line1 += f"       - gpu_id {g} : {gpu_name} | Memory = {gpu['totalGlobalMem'] / (1024 * 1024):.2f} MB | Compute Capability = {gpu['major']}.{gpu['minor']}\n"
     else:
         gpu = _xp.cuda.runtime.getDeviceProperties(0)
-        gpu_name = gpu['name'].decode()
-        line1=f"[XuPy] Device {_xp.cuda.runtime.getDevice()} available - GPU : `{gpu_name}`\n"
+        gpu_name = gpu["name"].decode()
+        line1 = f"[XuPy] Device {_xp.cuda.runtime.getDevice()} available - GPU : `{gpu_name}`\n"
         line1 += f"       Memory = {_xp.cuda.runtime.getDeviceProperties(0)['totalGlobalMem'] / (1024 * 1024):.2f} MB | Compute Capability = {_xp.cuda.runtime.getDeviceProperties(0)['major']}.{_xp.cuda.runtime.getDeviceProperties(0)['minor']}\n"
     print(
         f"""
 {line1}       Using CuPy {_xp.__version__} for acceleration."""
     )
-    
+
     # Test cupy is working on the system
     import gc
-    a = _xp.array([1, 2, 3]) # test array
-    del a # cleanup
+
+    a = _xp.array([1, 2, 3])  # test array
+    del a  # cleanup
     gc.collect()
     _GPU = True
 
 except Exception as err:
-    print("""
+    print(
+        """
 [XuPy] GPU Acceleration not available. 
-       Fallback to NumPy instead.""")
+       Fallback to NumPy instead."""
+    )
     _GPU = False  # just to be sure ...
-    from numpy import *         # type: ignore
+    from numpy import *  # type: ignore
 
 on_gpu = _GPU
 
 if _GPU:
-    
+
     float = _xp.float32
     double = _xp.float64
     cfloat = _xp.complex64
     cdouble = _xp.complex128
-    
+
     np = _np
     npma = _np.ma
 
@@ -70,7 +74,7 @@ if _GPU:
         designed to let you work with large arrays on CUDA-enabled devices using
         CuPy for numerical computation while retaining the expressive masked-array
         API familiar from numpy.ma.
-        
+
         Key features
         ------------
         - Wraps a CuPy ndarray ("data") together with a boolean mask of the same
@@ -83,7 +87,7 @@ if _GPU:
             to Python lists / scalars.
         - Designed for memory-optimized operations: many reductions and logical
             tests convert to NumPy masked arrays only when necessary.
-        
+
         Parameters
         ----------
         data : array-like
@@ -137,7 +141,7 @@ if _GPU:
                 Internal flag indicating whether the mask is "hard" (semantically
                 immutable).
 
-                
+
         Mask semantics and behavior
         ---------------------------
         - The mask is always a boolean array aligned with `data`. Users can access
@@ -150,7 +154,7 @@ if _GPU:
         - Some operations convert to a NumPy masked_array for convenience or to
             reuse numpy.ma utilities; this conversion copies data from GPU to CPU.
             Use asmarray() explicitly to force conversion when needed.
-            
+
         Common methods (overview)
         -------------------------
         - reshape, flatten, ravel, squeeze, expand_dims, transpose, swapaxes,
@@ -171,7 +175,7 @@ if _GPU:
             return MaskedArray views or scalars consistent with numpy.ma rules.
         - asmarray: convert to numpy.ma.MaskedArray on CPU (copies data and mask
             from GPU to host memory). Use as the bridge to CPU-only utilities.
-            
+
         Arithmetic, ufuncs and operator behavior
         ----------------------------------------
         - Binary operations and ufuncs between _XupyMaskedArray instances will
@@ -188,7 +192,7 @@ if _GPU:
             cause a GPU -> CPU transfer. This is a trade-off to retain correct
             mask-aware behavior; performance-critical code should prefer explicit
             GPU-safe ufuncs when possible.
-            
+
         Performance and memory considerations
         -------------------------------------
         - The object is optimized for GPU computation by using CuPy arrays for
@@ -202,7 +206,7 @@ if _GPU:
             etc.) to keep computation on the device and minimize data transfer.
         - Copying and type casting can allocate additional GPU memory; use views
             or in-place methods when memory is constrained.
-            
+
         Representation and printing
         ---------------------------
         - __repr__ attempts to follow numpy.ma formatting conventions while
@@ -211,7 +215,7 @@ if _GPU:
         - __str__ delegates to a masked-display conversion that replaces masked
             entries with a human-readable token. These operations involve a
             transfer from GPU to CPU.
-            
+
         Interoperability with numpy.ma and CuPy
         --------------------------------------
         - asmarray() returns a numpy.ma.MaskedArray with the data and mask copied
@@ -223,7 +227,7 @@ if _GPU:
         - When mixing with plain NumPy ndarrays or scalars, values are promoted
             to CuPy arrays for computation, and mask behavior follows numpy.ma rules
             (masked elements propagate).
-            
+
         Examples
         --------
         Create from a NumPy array with a mask:
@@ -239,7 +243,7 @@ if _GPU:
         Convert to NumPy masked array for CPU-only operations:
         >>> ma = m_gpu.asmarray()
         >>> ma.mean()
-        
+
         Notes and caveats
         -----------------
         - The wrapper is not a drop-in replacement for numpy.ma in every edge
@@ -250,7 +254,7 @@ if _GPU:
             is recommended when you want to guarantee a CPU-side masked array.
         - Users should be mindful of device-host memory transfers when mixing
             GPU operations and mask-aware CPU computations.
-            
+
         Extensibility
         -------------
         - The class is intended to be extended with additional ufunc wrappers,
@@ -262,10 +266,10 @@ if _GPU:
         --------
         numpy.ma.MaskedArray : Reference implementation and semantics for masked arrays.
         cupy.ndarray : GPU-backed numerical arrays used as the data store.
-        
+
         ----
-        
-        
+
+
         A comprehensive masked array wrapper for CuPy arrays with NumPy-like interface.
 
         Parameters
@@ -300,23 +304,25 @@ if _GPU:
         _print_width_1d = 1500
 
         def __init__(
-            self, 
-            data:_t.ArrayLike, 
-            mask:_t.ArrayLike = None,
+            self,
+            data: _t.ArrayLike,
+            mask: _t.ArrayLike = None,
             dtype: _t.DTypeLike = None,
             fill_value: _t.Scalar = None,
             keep_mask: bool = True,
             hard_mask: bool = False,
-            order: _t.Optional[str] = None
+            order: _t.Optional[str] = None,
         ):
             """The constructor"""
 
             self._dtype = dtype
-            self.data = _xp.asarray(data, dtype=dtype if dtype else _xp.float32, order=order)
+            self.data = _xp.asarray(
+                data, dtype=dtype if dtype else _xp.float32, order=order
+            )
 
             if mask is None:
                 if keep_mask is True:
-                    if hasattr(data, 'mask'):
+                    if hasattr(data, "mask"):
                         try:
                             self._mask = _xp.asarray(data.mask, dtype=bool)
                         except Exception as e:
@@ -330,7 +336,7 @@ if _GPU:
             self._is_hard_mask = hard_mask
 
             if fill_value is None:
-                if hasattr(data, 'fill_value'):
+                if hasattr(data, "fill_value"):
                     self._fill_value = data.fill_value
                 else:
                     self._fill_value = _np.ma.default_fill_value(self.data)
@@ -380,24 +386,24 @@ if _GPU:
 
         def __repr__(self) -> str:
             """string representation
-            
+
             Code adapted from NumPy official API
             https://github.com/numpy/numpy/blob/main/numpy/ma/core.py
             """
-            import builtins 
-            
+            import builtins
+
             prefix = f"xupy_masked_array("
 
             dtype_needed = (
-                not _np.core.arrayprint.dtype_is_implied(self.dtype) or
-                _np.all(self._mask) or
-                self.size == 0
+                not _np.core.arrayprint.dtype_is_implied(self.dtype)
+                or _np.all(self._mask)
+                or self.size == 0
             )
 
             # determine which keyword args need to be shown
-            keys = ['data', 'mask']
+            keys = ["data", "mask"]
             if dtype_needed:
-                keys.append('dtype')
+                keys.append("dtype")
 
             # array has only one row (non-column)
             is_one_row = builtins.all(dim == 1 for dim in self.shape[:-1])
@@ -411,43 +417,42 @@ if _GPU:
                 indents[keys[0]] = prefix
                 for k in keys[1:]:
                     n = builtins.max(min_indent, len(prefix + keys[0]) - len(k))
-                    indents[k] = ' ' * n
-                prefix = ''  # absorbed into the first indent
+                    indents[k] = " " * n
+                prefix = ""  # absorbed into the first indent
             else:
                 # each key on its own line, indented by two spaces
-                indents = {k: ' ' * min_indent for k in keys}
-                prefix = prefix + '\n'  # first key on the next line
+                indents = {k: " " * min_indent for k in keys}
+                prefix = prefix + "\n"  # first key on the next line
 
             # format the field values
             reprs = {}
 
             # Determine precision based on dtype
             the_type = _np.dtype(self.dtype)
-            if the_type.kind == 'f':  # Floating-point
+            if the_type.kind == "f":  # Floating-point
                 precision = 6 if the_type.itemsize == 4 else 15  # float32 vs float64
             else:
                 precision = None  # Default for integers, etc.
-            
-            reprs['data'] = _np.array2string(
+
+            reprs["data"] = _np.array2string(
                 self._insert_masked_print(),
                 separator=", ",
-                prefix=indents['data'] + 'data=',
-                suffix=',',
-                precision=precision)
-            reprs['mask'] = _np.array2string(
+                prefix=indents["data"] + "data=",
+                suffix=",",
+                precision=precision,
+            )
+            reprs["mask"] = _np.array2string(
                 _xp.asnumpy(self._mask),
                 separator=", ",
-                prefix=indents['mask'] + 'mask=',
-                suffix=',')
+                prefix=indents["mask"] + "mask=",
+                suffix=",",
+            )
             if dtype_needed:
-                reprs['dtype'] = _np.core.arrayprint.dtype_short_repr(self.dtype)
+                reprs["dtype"] = _np.core.arrayprint.dtype_short_repr(self.dtype)
 
             # join keys with values and indentations
-            result = ',\n'.join(
-                '{}{}={}'.format(indents[k], k, reprs[k])
-                for k in keys
-            )
-            return prefix + result + ')'
+            result = ",\n".join("{}{}={}".format(indents[k], k, reprs[k]) for k in keys)
+            return prefix + result + ")"
 
         def __str__(self) -> str:
             # data = _xp.asnumpy(self.data)
@@ -455,7 +460,7 @@ if _GPU:
             # display = data.astype(object)
             # display[mask == True] = "--"
             return self._insert_masked_print().__str__()
-        
+
         def _insert_masked_print(self):
             """
             Replace masked values with masked_print_option, casting all innermost
@@ -466,49 +471,53 @@ if _GPU:
             display = data.astype(object)
             display[mask] = "--"
             return display
-        
+
         # --- Array Manipulation Methods ---
         def reshape(self, *shape: int) -> "_XupyMaskedArray":
             """Return a new array with the same data but a new shape."""
             new_data = self.data.reshape(*shape)
             new_mask = self._mask.reshape(*shape)
             return _XupyMaskedArray(new_data, new_mask)
-        
-        def flatten(self, order: str = 'C') -> "_XupyMaskedArray":
+
+        def flatten(self, order: str = "C") -> "_XupyMaskedArray":
             """Return a copy of the array collapsed into one dimension."""
             new_data = self.data.flatten(order=order)
             new_mask = self._mask.flatten(order=order)
             return _XupyMaskedArray(new_data, new_mask)
-        
-        def ravel(self, order: str = 'C') -> "_XupyMaskedArray":
+
+        def ravel(self, order: str = "C") -> "_XupyMaskedArray":
             """Return a flattened array."""
             return self.flatten(order=order)
-        
-        def squeeze(self, axis: _t.Optional[tuple[int, ...]] = None) -> "_XupyMaskedArray":
+
+        def squeeze(
+            self, axis: _t.Optional[tuple[int, ...]] = None
+        ) -> "_XupyMaskedArray":
             """Remove single-dimensional entries from the shape of an array."""
             new_data = self.data.squeeze(axis=axis)
             new_mask = self._mask.squeeze(axis=axis)
             return _XupyMaskedArray(new_data, new_mask)
-        
+
         def expand_dims(self, axis: int) -> "_XupyMaskedArray":
             """Expand the shape of an array by inserting a new axis."""
             new_data = _xp.expand_dims(self.data, axis=axis)
             new_mask = _xp.expand_dims(self._mask, axis=axis)
             return _XupyMaskedArray(new_data, new_mask)
-        
+
         def transpose(self, *axes: int) -> "_XupyMaskedArray":
             """Return an array with axes transposed."""
             new_data = self.data.transpose(*axes)
             new_mask = self._mask.transpose(*axes)
             return _XupyMaskedArray(new_data, new_mask)
-        
+
         def swapaxes(self, axis1: int, axis2: int) -> "_XupyMaskedArray":
             """Return an array with axis1 and axis2 interchanged."""
             new_data = self.data.swapaxes(axis1, axis2)
             new_mask = self._mask.swapaxes(axis1, axis2)
             return _XupyMaskedArray(new_data, new_mask)
 
-        def repeat(self, repeats: _t.Union[int, _t.ArrayLike], axis: _t.Optional[int] = None) -> "_XupyMaskedArray":
+        def repeat(
+            self, repeats: _t.Union[int, _t.ArrayLike], axis: _t.Optional[int] = None
+        ) -> "_XupyMaskedArray":
             """Repeat elements of an array."""
             new_data = _xp.repeat(self.data, repeats, axis=axis)
             new_mask = _xp.repeat(self._mask, repeats, axis=axis)
@@ -520,85 +529,86 @@ if _GPU:
             new_mask = _xp.tile(self._mask, reps)
             return _XupyMaskedArray(new_data, new_mask)
 
-
         # --- Statistical Methods (Memory-Optimized) ---
-        def mean(self, **kwargs: dict[str,_t.Any]) -> _t.Scalar:
+        def mean(self, **kwargs: dict[str, _t.Any]) -> _t.Scalar:
             """Compute the arithmetic mean along the specified axis."""
             own = self.asmarray()
             result = own.mean(**kwargs)
             return result
-        
-        def sum(self, **kwargs: dict[str,_t.Any]) -> _t.Scalar:
+
+        def sum(self, **kwargs: dict[str, _t.Any]) -> _t.Scalar:
             """Sum of array elements over a given axis."""
             own = self.asmarray()
             result = own.sum(**kwargs)
             return result
-        
-        def std(self, **kwargs: dict[str,_t.Any]) -> _t.Scalar:
+
+        def std(self, **kwargs: dict[str, _t.Any]) -> _t.Scalar:
             """Compute the standard deviation along the specified axis."""
             own = self.asmarray()
             result = own.std(**kwargs)
             return result
-        
-        def var(self, **kwargs: dict[str,_t.Any]) -> _t.Scalar:
+
+        def var(self, **kwargs: dict[str, _t.Any]) -> _t.Scalar:
             """Compute the variance along the specified axis."""
             own = self.asmarray()
             result = own.var(**kwargs)
             return result
-        
-        def min(self, **kwargs: dict[str,_t.Any]) -> _t.Scalar:
+
+        def min(self, **kwargs: dict[str, _t.Any]) -> _t.Scalar:
             """Return the minimum along a given axis."""
             own = self.asmarray()
             result = own.min(**kwargs)
             return result
-        
-        def max(self, **kwargs: dict[str,_t.Any]) -> _t.Scalar:
+
+        def max(self, **kwargs: dict[str, _t.Any]) -> _t.Scalar:
             """Return the maximum along a given axis."""
             own = self.asmarray()
             result = own.max(**kwargs)
             return result
 
         # --- Universal Functions Support ---
-        def apply_ufunc(self, ufunc: object, *args: _t.Any, **kwargs: dict[str, _t.Any]) -> "_XupyMaskedArray":
+        def apply_ufunc(
+            self, ufunc: object, *args: _t.Any, **kwargs: dict[str, _t.Any]
+        ) -> "_XupyMaskedArray":
             """Apply a universal function to the array, respecting masks."""
             # Apply ufunc to data
             result_data = ufunc(self.data, *args, **kwargs)
             result_mask = _np.where(_np.isnan(result_data), True, self._mask)
             # Preserve mask
             return _XupyMaskedArray(result_data, result_mask)
-        
+
         def sqrt(self) -> "_XupyMaskedArray":
             """Return the positive square-root of an array, element-wise."""
             return self.apply_ufunc(_xp.sqrt)
-        
+
         def exp(self) -> "_XupyMaskedArray":
             """Calculate the exponential of all elements in the input array."""
             return self.apply_ufunc(_xp.exp)
-        
+
         def log(self) -> "_XupyMaskedArray":
             """Natural logarithm, element-wise."""
             return self.apply_ufunc(_xp.log)
-        
+
         def log10(self) -> "_XupyMaskedArray":
             """Return the base 10 logarithm of the input array, element-wise."""
             return self.apply_ufunc(_xp.log10)
-        
+
         def sin(self) -> "_XupyMaskedArray":
             """Trigonometric sine, element-wise."""
             return self.apply_ufunc(_xp.sin)
-        
+
         def cos(self) -> "_XupyMaskedArray":
             """Cosine element-wise."""
             return self.apply_ufunc(_xp.cos)
-        
+
         def tan(self) -> "_XupyMaskedArray":
             """Compute tangent element-wise."""
             return self.apply_ufunc(_xp.tan)
-        
+
         def arcsin(self) -> "_XupyMaskedArray":
             """Inverse sine, element-wise."""
             return self.apply_ufunc(_xp.arcsin)
-        
+
         def arccos(self) -> "_XupyMaskedArray":
             """Inverse cosine, element-wise."""
             return self.apply_ufunc(_xp.arccos)
@@ -606,97 +616,97 @@ if _GPU:
         def arctan(self) -> "_XupyMaskedArray":
             """Inverse tangent, element-wise."""
             return self.apply_ufunc(_xp.arctan)
-        
+
         def sinh(self) -> "_XupyMaskedArray":
             """Hyperbolic sine, element-wise."""
             return self.apply_ufunc(_xp.sinh)
-        
+
         def cosh(self) -> "_XupyMaskedArray":
             """Hyperbolic cosine, element-wise."""
             return self.apply_ufunc(_xp.cosh)
-        
+
         def tanh(self) -> "_XupyMaskedArray":
             """Compute hyperbolic tangent element-wise."""
             return self.apply_ufunc(_xp.tanh)
-        
+
         def floor(self) -> "_XupyMaskedArray":
             """Return the floor of the input, element-wise."""
             return self.apply_ufunc(_xp.floor)
-        
+
         def ceil(self) -> "_XupyMaskedArray":
             """Return the ceiling of the input, element-wise."""
             return self.apply_ufunc(_xp.ceil)
-        
+
         def round(self, decimals: int = 0) -> "_XupyMaskedArray":
             """Evenly round to the given number of decimals."""
             return self.apply_ufunc(_xp.round, decimals=decimals)
 
         # --- Array Information Methods ---
-        def any(self, **kwargs: dict[str,_t.Any]) -> bool:
+        def any(self, **kwargs: dict[str, _t.Any]) -> bool:
             """Test whether any array element along a given axis evaluates to True."""
             own = self.asmarray()
             result = own.any(**kwargs)
             return result
-        
-        def all(self, **kwargs: dict[str,_t.Any]) -> bool:
+
+        def all(self, **kwargs: dict[str, _t.Any]) -> bool:
             """Test whether all array elements along a given axis evaluate to True."""
             own = self.asmarray()
             result = own.all(**kwargs)
             return result
-        
+
         def count_masked(self) -> int:
             """Return the number of masked elements."""
             return int(_xp.sum(self._mask))
-        
+
         def count_unmasked(self) -> int:
             """Return the number of unmasked elements."""
             return int(_xp.sum(~self._mask))
-        
+
         def is_masked(self) -> bool:
             """Return True if the array has any masked values."""
             return bool(_xp.any(self._mask))
-        
+
         def compressed(self) -> _xp.ndarray:
             """Return all the non-masked data as a 1-D array."""
             return self.data[~self._mask]
-        
+
         def fill_value(self, value: _t.Scalar) -> None:
             """Set the fill value for masked elements."""
             self.data[self._mask] = value
 
-
         # --- Copy and Conversion Methods ---
-        def copy(self, order: str = 'C') -> "_XupyMaskedArray":
+        def copy(self, order: str = "C") -> "_XupyMaskedArray":
             """Return a copy of the array."""
-            return _XupyMaskedArray(self.data.copy(order=order), self._mask.copy(order=order))
-        
-        def astype(self, dtype: _t.DTypeLike, order: str = 'K') -> "_XupyMaskedArray":
+            return _XupyMaskedArray(
+                self.data.copy(order=order), self._mask.copy(order=order)
+            )
+
+        def astype(self, dtype: _t.DTypeLike, order: str = "K") -> "_XupyMaskedArray":
             """
             Copy of the array, cast to a specified type.
-            
+
             As natively cupy does not yet support casting, this method
             will simply return a copy of the array with the new dtype.
             """
             new_data = _xp.asarray(self.data, dtype=dtype, order=order)
             new_mask = self._mask.copy()
             return _XupyMaskedArray(new_data, new_mask, dtype=dtype)
-        
+
         def tolist(self) -> list[_t.Scalar]:
             """Return the array as a nested list."""
             return self.data.tolist()
-        
+
         def item(self, *args: int) -> _t.Scalar:
             """Copy an element of an array to a standard Python scalar and return it."""
             own = self.asmarray()
             result = own.item(*args)
             return result
 
-
         # --- Arithmetic Operators ---
-        # TODO: Add to all the methods the ability to handle 
+        # TODO: Add to all the methods the ability to handle
         # other as `numpy.ndarray`. Convert it to a cupy array and
         # then perform the operation.
-        
+
         def __radd__(self, other: object) -> "_XupyMaskedArray":
             """
             Reflected element-wise addition with mask propagation.
@@ -1096,7 +1106,7 @@ if _GPU:
             own = self.asmarray()
             result = own / other
             return _XupyMaskedArray(result.data, result.mask)
-        
+
         def __add__(self, other: object) -> "_XupyMaskedArray":
             """
             Element-wise addition with mask propagation.
@@ -1124,7 +1134,7 @@ if _GPU:
             if isinstance(other, _XupyMaskedArray):
                 other = other.asmarray()
             own = self.asmarray()
-            result = own ** other
+            result = own**other
             return _XupyMaskedArray(result.data, result.mask)
 
         def __floordiv__(self, other: object) -> "_XupyMaskedArray":
@@ -1146,13 +1156,15 @@ if _GPU:
             own = self.asmarray()
             result = own % other
             return _XupyMaskedArray(result.data, result.mask)
-        
+
         def __getattr__(self, key: str):
             """Get attribute from the underlying CuPy array."""
             if hasattr(self.data, key):
                 return getattr(self.data, key)
-            raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{key}'")
-        
+            raise AttributeError(
+                f"'{self.__class__.__name__}' object has no attribute '{key}'"
+            )
+
         def __getitem__(self, item: slice) -> "_XupyMaskedArray":
             """
             Get item(s) from the masked array, preserving the mask.
@@ -1176,35 +1188,68 @@ if _GPU:
                 return data_item.item()
             return _XupyMaskedArray(data_item, mask_item)
 
-        def asmarray(self, **kwargs: dict[str,_t.Any]) -> _np.ma.MaskedArray[_t.Any,_t.Any]:
+        def asmarray(
+            self, **kwargs: dict[str, _t.Any]
+        ) -> _np.ma.MaskedArray[_t.Any, _t.Any]:
             """Return a NumPy masked array on CPU."""
-            dtype = kwargs.get('dtype', self.dtype)
+            dtype = kwargs.get("dtype", self.dtype)
             if "dtype" in kwargs:
                 kwargs.pop("dtype")
-            return _np.ma.masked_array(_xp.asnumpy(self.data), mask=_xp.asnumpy(self._mask), dtype=dtype, **kwargs)
+            return _np.ma.masked_array(
+                _xp.asnumpy(self.data),
+                mask=_xp.asnumpy(self._mask),
+                dtype=dtype,
+                **kwargs,
+            )
 
     MaskedArray = _XupyMaskedArray
-    
-    
+
     def set_device(device_id: int) -> None:
-        """Set the device for the masked array."""
-        _xp.cuda.runtime.setDevice(device_id)
-    
-    
+        """
+        Sets the default CUDA device for computations (cupy).
+
+        Parameters
+        ----------
+        device_id : int
+            The ID of the CUDA device to set as default.
+
+        Raises
+        ------
+        RuntimeError : If the device cannot be set or if the device is already the current device.
+
+        Examples
+        --------
+        >>> xp.set_device(0)
+        >>> xp.set_device(1)
+        """
+        import warnings
+
+        if not _xp.cuda.runtime.getDevice() == device_id and n_gpus > 1:
+            try:
+                _xp.cuda.runtime.setDevice(device_id)
+                print(f"[XuPy] Set device to {device_id} : {gpus[device_id]}")
+            except Exception as e:
+                raise RuntimeError(f"[XuPy] Failed to set device to {device_id} : {e}")
+        elif _xp.cuda.runtime.getDevice() == device_id and n_gpus == 1:
+            raise RuntimeError(f"[XuPy] Only one GPU available")
+        else:
+            warnings.warn(
+                f"[XuPy] Device {device_id} is already the current device", UserWarning
+            )
 
     def masked_array(
         data: _t.NDArray[_t.Any],
-        mask: _np.ndarray[_t.ArrayLike,_t.Any] = None,
+        mask: _np.ndarray[_t.ArrayLike, _t.Any] = None,
         **kwargs: dict[_t.Any, _t.Any],
     ) -> _t.XupyMaskedArray:
         """
         Create an N-dimensional masked array with GPU support.
-        
+
         The class `XupyMaskedArray` is a wrapper of `cupy.ndarray` with
         additional functionality for handling masked arrays on the GPU.
         It defines the additional property `mask`, which can be an array of booleans or integers,
         where `True` indicates a masked value.
-        
+
         Parameters
         ----------
         data : NDArray[Any]
@@ -1212,9 +1257,9 @@ if _GPU:
         mask : ArrayLike[bool|int], optional
             The mask for the array, where `True` indicates a masked value.
             If not provided, a mask of all `False` values is created.
-        **kwargs : Any    
+        **kwargs : Any
             Additional keyword arguments to pass to the masked array constructor.
-            
+
         Returns
         -------
         XupyMaskedArray
@@ -1236,8 +1281,13 @@ if _GPU:
         - Emergency cleanup for out-of-memory situations
         """
 
-        def __init__(self, device_id: _t.Optional[int] = None, auto_cleanup: bool = True,
-                     memory_threshold: float = 0.9, monitor_interval: float = 1.0):
+        def __init__(
+            self,
+            device_id: _t.Optional[int] = None,
+            auto_cleanup: bool = True,
+            memory_threshold: float = 0.9,
+            monitor_interval: float = 1.0,
+        ):
             """
             Initialize the memory context manager.
 
@@ -1316,19 +1366,29 @@ if _GPU:
                     if "used" in final_mem:
                         memory_delta = final_mem["used"] - self._initial_memory
                         print(f"[MemoryContext] Session completed in {duration:.2f}s")
-                        print(f"[MemoryContext] Initial memory: {self._initial_memory / (1024**3):.2f} GB")
-                        print(f"[MemoryContext] Peak memory: {self._peak_memory / (1024**3):.2f} GB")
-                        print(f"[MemoryContext] Final memory: {final_mem['used'] / (1024**3):.2f} GB")
-                        print(f"[MemoryContext] Memory delta: {memory_delta / (1024**3):.2f} GB")
+                        print(
+                            f"[MemoryContext] Initial memory: {self._initial_memory / (1024**3):.2f} GB"
+                        )
+                        print(
+                            f"[MemoryContext] Peak memory: {self._peak_memory / (1024**3):.2f} GB"
+                        )
+                        print(
+                            f"[MemoryContext] Final memory: {final_mem['used'] / (1024**3):.2f} GB"
+                        )
+                        print(
+                            f"[MemoryContext] Memory delta: {memory_delta / (1024**3):.2f} GB"
+                        )
                         if self._cleanup_count > 0:
-                            print(f"[MemoryContext] Cleanup operations: {self._cleanup_count}")
+                            print(
+                                f"[MemoryContext] Cleanup operations: {self._cleanup_count}"
+                            )
 
             except Exception as e:
                 print(f"Warning: Error during memory context cleanup: {e}")
 
         def track_object(self, obj):
             """Track a GPU object for cleanup."""
-            if hasattr(obj, 'data') and hasattr(obj.data, 'device'):
+            if hasattr(obj, "data") and hasattr(obj.data, "device"):
                 self._gpu_objects.append(obj)
 
         def _cleanup_gpu_objects(self):
@@ -1336,9 +1396,9 @@ if _GPU:
             for obj in self._gpu_objects:
                 try:
                     # Clear references to GPU data
-                    if hasattr(obj, 'data'):
+                    if hasattr(obj, "data"):
                         obj.data = None
-                    if hasattr(obj, 'mask'):
+                    if hasattr(obj, "mask"):
                         obj.mask = None
                 except Exception:
                     pass
@@ -1385,6 +1445,7 @@ if _GPU:
 
             # Force garbage collection
             import gc
+
             gc.collect()
 
             # Clear CuPy caches
@@ -1416,7 +1477,7 @@ if _GPU:
                 # Force garbage collection on the memory pool
                 mempool.free_all_blocks()
                 # Try to shrink the pool
-                if hasattr(mempool, 'shrink'):
+                if hasattr(mempool, "shrink"):
                     mempool.shrink()
             except Exception as e:
                 print(f"Warning: Could not shrink memory pool: {e}")
@@ -1436,7 +1497,9 @@ if _GPU:
                 _xp.cuda.runtime.deviceSynchronize()
                 # Try to trigger memory defragmentation
                 free, total = _xp.cuda.runtime.memGetInfo()
-                print(f"[MemoryContext] CUDA memory after cleanup: {free/(1024**3):.2f}/{total/(1024**3):.2f} GB")
+                print(
+                    f"[MemoryContext] CUDA memory after cleanup: {free/(1024**3):.2f}/{total/(1024**3):.2f} GB"
+                )
             except Exception as e:
                 print(f"Warning: Could not get CUDA memory info: {e}")
 
@@ -1462,6 +1525,7 @@ if _GPU:
 
             # Most aggressive cleanup possible
             import gc
+
             gc.collect()
 
             # Clear all caches multiple times
@@ -1490,7 +1554,7 @@ if _GPU:
                 # Try to force complete memory pool reset
                 mempool = _xp.get_default_memory_pool()
                 mempool.free_all_blocks()
-                if hasattr(mempool, 'shrink'):
+                if hasattr(mempool, "shrink"):
                     mempool.shrink()
                 # Try to free pinned memory pool too
                 pinned_pool = _xp.get_default_pinned_memory_pool()
@@ -1511,7 +1575,11 @@ if _GPU:
 
             try:
                 # Get current device
-                device_to_query = self.device_id if self.device_id is not None else _xp.cuda.runtime.getDevice()
+                device_to_query = (
+                    self.device_id
+                    if self.device_id is not None
+                    else _xp.cuda.runtime.getDevice()
+                )
 
                 # Ensure we're on the correct device
                 current = _xp.cuda.runtime.getDevice()
@@ -1560,11 +1628,9 @@ if _GPU:
                     self._peak_memory = used
 
                 # Store in history
-                self._memory_history.append({
-                    "timestamp": _time.time(),
-                    "used": used,
-                    "free": free
-                })
+                self._memory_history.append(
+                    {"timestamp": _time.time(), "used": used, "free": free}
+                )
 
                 # Keep only recent history
                 if len(self._memory_history) > 100:
@@ -1581,14 +1647,18 @@ if _GPU:
             if "memory_percent" in mem_info:
                 pressure = mem_info["memory_percent"] > self.memory_threshold
                 if pressure:
-                    print(f"[MemoryContext] Memory pressure detected: {mem_info['memory_percent']*100:.1f}% > {self.memory_threshold*100:.1f}%")
+                    print(
+                        f"[MemoryContext] Memory pressure detected: {mem_info['memory_percent']*100:.1f}% > {self.memory_threshold*100:.1f}%"
+                    )
                 return pressure
             return False
 
         def auto_cleanup_if_needed(self):
             """Automatically cleanup if memory pressure is high."""
             if self.check_memory_pressure():
-                print(f"[MemoryContext] Memory usage above {self.memory_threshold*100:.1f}%, triggering cleanup")
+                print(
+                    f"[MemoryContext] Memory usage above {self.memory_threshold*100:.1f}%, triggering cleanup"
+                )
                 self.aggressive_cleanup()
 
         def monitor_memory(self, duration: float = 10.0):
@@ -1626,19 +1696,26 @@ if _GPU:
             try:
                 # Get current memory info
                 free_before, total = _xp.cuda.runtime.memGetInfo()
-                print(f"[MemoryContext] Memory before forced deallocation: {free_before/(1024**3):.2f}/{total/(1024**3):.2f} GB")
+                print(
+                    f"[MemoryContext] Memory before forced deallocation: {free_before/(1024**3):.2f}/{total/(1024**3):.2f} GB"
+                )
 
                 # Try to allocate a large chunk to force pool cleanup
                 # This will fail if there's not enough memory, but that's okay
                 try:
                     # Allocate 90% of available memory temporarily
                     alloc_size = int(free_before * 0.9)
-                    if alloc_size > 100 * (1024**3):  # Only if we have more than 100MB to work with
-                        temp_array = _xp.empty((alloc_size // 4,), dtype=_xp.float32)  # 4 bytes per float32
+                    if alloc_size > 100 * (
+                        1024**3
+                    ):  # Only if we have more than 100MB to work with
+                        temp_array = _xp.empty(
+                            (alloc_size // 4,), dtype=_xp.float32
+                        )  # 4 bytes per float32
                         # Immediately delete it
                         del temp_array
                         # Force garbage collection
                         import gc
+
                         gc.collect()
                         # Clear memory pool
                         mempool = _xp.get_default_memory_pool()
@@ -1653,7 +1730,9 @@ if _GPU:
                 # Check memory after
                 free_after, _ = _xp.cuda.runtime.memGetInfo()
                 freed = free_after - free_before
-                print(f"[MemoryContext] Memory after forced deallocation: {free_after/(1024**3):.2f}/{total/(1024**3):.2f} GB")
+                print(
+                    f"[MemoryContext] Memory after forced deallocation: {free_after/(1024**3):.2f}/{total/(1024**3):.2f} GB"
+                )
                 print(f"[MemoryContext] Memory freed: {freed/(1024**3):.2f} GB")
 
             except Exception as e:
@@ -1677,6 +1756,7 @@ if _GPU:
 
                 # Force garbage collection to clean up old pool
                 import gc
+
                 gc.collect()
 
                 # Free all blocks in old pool
@@ -1696,16 +1776,18 @@ if _GPU:
             """String representation with memory info."""
             mem_info = self.get_memory_info()
             if "error" in mem_info:
-                return f"MemoryContext(device={self.device_id}, error={mem_info['error']})"
+                return (
+                    f"MemoryContext(device={self.device_id}, error={mem_info['error']})"
+                )
 
             used_gb = mem_info.get("used", 0) / (1024**3)
             total_gb = mem_info.get("total", 0) / (1024**3)
             percent = mem_info.get("memory_percent", 0) * 100
 
             return f"MemoryContext(device={mem_info.get('device')}, memory={used_gb:.2f}/{total_gb:.2f} GB ({percent:.1f}%))"
-    
+
 else:
-    
+
     float = double = _np.float64
     cfloat = cdouble = _np.complex128
 
