@@ -23,7 +23,7 @@ try:
             gpu = _xp.cuda.runtime.getDeviceProperties(g)
             gpu_name = gpu['name'].decode()
             gpus[f"ID{g}"] = gpu_name
-            line1 += f"      -- gpuID{g}: {gpu_name} | Memory = {gpu['totalGlobalMem'] / (1024 * 1024):.2f} MB | Compute Capability = {gpu['major']}.{gpu['minor']}\n"
+            line1 += f"       - gpuID{g}: {gpu_name} | Memory = {gpu['totalGlobalMem'] / (1024 * 1024):.2f} MB | Compute Capability = {gpu['major']}.{gpu['minor']}\n"
     else:
         gpu = _xp.cuda.runtime.getDeviceProperties(0)
         gpu_name = gpu['name'].decode()
