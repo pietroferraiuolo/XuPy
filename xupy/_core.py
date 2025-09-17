@@ -28,11 +28,10 @@ try:
         gpu = _xp.cuda.runtime.getDeviceProperties(0)
         gpu_name = gpu['name'].decode()
         line1=f"[XuPy] Device {_xp.cuda.runtime.getDevice()} available - GPU : `{gpu_name}`\n"
-        line1 += f"       Memory = {_xp.cuda.runtime.getDeviceProperties(0)['totalGlobalMem'] / (1024 * 1024):.2f} MB | Compute Capability = {_xp.cuda.runtime.getDeviceProperties(0)['major']}.{_xp.cuda.runtime.getDeviceProperties(0)['minor']}"
+        line1 += f"       Memory = {_xp.cuda.runtime.getDeviceProperties(0)['totalGlobalMem'] / (1024 * 1024):.2f} MB | Compute Capability = {_xp.cuda.runtime.getDeviceProperties(0)['major']}.{_xp.cuda.runtime.getDeviceProperties(0)['minor']}\n"
     print(
         f"""
-{line1}
-       Using CuPy {_xp.__version__} for acceleration."""
+{line1}       Using CuPy {_xp.__version__} for acceleration."""
     )
     
     # Test cupy is working on the system
