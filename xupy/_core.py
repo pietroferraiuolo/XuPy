@@ -13,14 +13,25 @@ del __check__
 try:
     from cupy import *              # type: ignore
     import cupy as _xp
-
-    gpu = _xp.cuda.runtime.getDeviceProperties(0)
-    gpu_name = gpu['name'].decode()
-    _GPU = True
+    n_gpus = _xp.cuda.runtime.getDeviceCount()
+    if n_gpus > 1:
+        gpus = {}
+        line1 = """
+[XuPy] Multiple GPUs detected:
+"""
+        for g in range(n_gpus):
+            gpu = _xp.cuda.runtime.getDeviceProperties(g)
+            gpu_name = gpu['name'].decode()
+            gpus[f"ID{g}"] = gpu_name
+            line1 += f"      -- gpuID{g}: {gpu_name} | Memory = {gpu['totalGlobalMem'] / (1024 * 1024):.2f} MB | Compute Capability = {gpu['major']}.{gpu['minor']}\n"
+    else:
+        gpu = _xp.cuda.runtime.getDeviceProperties(0)
+        gpu_name = gpu['name'].decode()
+        line1=f"[XuPy] Device {_xp.cuda.runtime.getDevice()} available - GPU : `{gpu_name}`\n"
+        line1 += f"       Memory = {_xp.cuda.runtime.getDeviceProperties(0)['totalGlobalMem'] / (1024 * 1024):.2f} MB | Compute Capability = {_xp.cuda.runtime.getDeviceProperties(0)['major']}.{_xp.cuda.runtime.getDeviceProperties(0)['minor']}"
     print(
         f"""
-[XuPy] Device {_xp.cuda.runtime.getDevice()} available - GPU : `{gpu_name}`
-       Memory = {_xp.cuda.runtime.getDeviceProperties(0)['totalGlobalMem'] / (1024 * 1000):.2f} MB | Compute Capability = {_xp.cuda.runtime.getDeviceProperties(0)['major']}.{_xp.cuda.runtime.getDeviceProperties(0)['minor']}
+{line1}
        Using CuPy {_xp.__version__} for acceleration."""
     )
     
@@ -29,6 +40,8 @@ try:
     a = _xp.array([1, 2, 3]) # test array
     del a # cleanup
     gc.collect()
+    _GPU = True
+
 except Exception as err:
     print("""
 [XuPy] GPU Acceleration not available. 
@@ -42,6 +55,9 @@ if _GPU:
     
     float = _xp.float32
     double = _xp.float64
+    cfloat = _xp.complex64
+    cdouble = _xp.complex128
+    
     np = _np
     npma = _np.ma
 
@@ -1169,6 +1185,13 @@ if _GPU:
             return _np.ma.masked_array(_xp.asnumpy(self.data), mask=_xp.asnumpy(self._mask), dtype=dtype, **kwargs)
 
     MaskedArray = _XupyMaskedArray
+    
+    
+    def set_device(device_id: int) -> None:
+        """Set the device for the masked array."""
+        _xp.cuda.runtime.setDevice(device_id)
+    
+    
 
     def masked_array(
         data: _t.NDArray[_t.Any],
@@ -1685,6 +1708,7 @@ if _GPU:
 else:
     
     float = double = _np.float64
+    cfloat = cdouble = _np.complex128
 
     masked_array = _np.ma.masked_array
     MaskedArray = _np.ma.MaskedArray
