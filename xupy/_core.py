@@ -24,12 +24,12 @@ try:
             gpu = _xp.cuda.runtime.getDeviceProperties(g)
             gpu_name = gpu["name"].decode()
             gpus[g] = gpu_name
-            line1 += f"       - gpu_id {g} : {gpu_name} | Memory = {gpu['totalGlobalMem'] / (1024 * 1024):.2f} MB | Compute Capability = {gpu['major']}.{gpu['minor']}\n"
+            line1 += f"       - gpu_id {g} : {gpu_name} | Memory = {gpu['totalGlobalMem'] / (1000 * 1024):.2f} MB | Compute Capability = {gpu['major']}.{gpu['minor']}\n"
     else:
         gpu = _xp.cuda.runtime.getDeviceProperties(0)
         gpu_name = gpu["name"].decode()
         line1 = f"[XuPy] Device {_xp.cuda.runtime.getDevice()} available - GPU : `{gpu_name}`\n"
-        line1 += f"       Memory = {_xp.cuda.runtime.getDeviceProperties(0)['totalGlobalMem'] / (1024 * 1024):.2f} MB | Compute Capability = {_xp.cuda.runtime.getDeviceProperties(0)['major']}.{_xp.cuda.runtime.getDeviceProperties(0)['minor']}\n"
+        line1 += f"       Memory = {_xp.cuda.runtime.getDeviceProperties(0)['totalGlobalMem'] / (1000 * 1024):.2f} MB | Compute Capability = {_xp.cuda.runtime.getDeviceProperties(0)['major']}.{_xp.cuda.runtime.getDeviceProperties(0)['minor']}\n"
     print(
         f"""
 {line1}       Using CuPy {_xp.__version__} for acceleration."""
