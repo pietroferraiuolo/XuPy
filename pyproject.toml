@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "XuPy"
-version = "1.3.5"
+version = "1.3.6"
 description = "GPU Accelerated masked arrays with automatic handling of CPU and GPU arrays."
 authors = [
     { name = "Pietro Ferraiuolo", email = "pietro.ferraiuolo@inaf.it" }
