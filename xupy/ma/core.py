@@ -4,9 +4,14 @@ XUPY MASKED ARRAY
 
 This module provides a comprehensive masked array wrapper for CuPy arrays with NumPy-like interface.
 """
-import cupy as _xp
 import numpy as _np
 from .. import typings as _t
+from .._core import on_gpu
+
+if on_gpu:
+    import cupy as _xp
+else:
+    import numpy as _xp
 
 class _XupyMaskedArray:
     """
@@ -306,7 +311,7 @@ class _XupyMaskedArray:
     @property
     def dtype(self):
         """Return the data type of the array."""
-        return self._dtype
+        return self._dtype if self._dtype is not None else self.data.dtype
 
     @property
     def size(self) -> int:
@@ -517,7 +522,8 @@ class _XupyMaskedArray:
         """Apply a universal function to the array, respecting masks."""
         # Apply ufunc to data
         result_data = ufunc(self.data, *args, **kwargs)
-        result_mask = _np.where(_np.isnan(result_data), True, self._mask)
+        # Use the appropriate array module for mask operations
+        result_mask = _xp.where(_xp.isnan(result_data), True, self._mask)
         # Preserve mask
         return _XupyMaskedArray(result_data, result_mask)
 
