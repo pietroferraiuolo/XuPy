@@ -5,8 +5,8 @@ XUPY MASKED ARRAY
 This module provides a comprehensive masked array wrapper for CuPy arrays with NumPy-like interface.
 """
 import numpy as _np
-from xupy import typings as _t
-from xupy._core import on_gpu
+from .. import typings as _t
+from .._core import on_gpu
 
 if on_gpu:
     import cupy as _xp

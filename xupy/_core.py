@@ -9,7 +9,7 @@ This module is the core of XuPy, it contains the functions and classes that are 
 import numpy as _np
 import time as _time
 import builtins as _b
-from xupy import typings as _t
+from . import typings as _t
 from ._cupy_install import __check_availability__ as __check__
 
 _GPU = False
