@@ -1,4 +1,4 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 from setuptools.command.install import install
 
 about = {}
@@ -24,7 +24,7 @@ setup(
     description="GPU Accelerated masked arrays with automatic handling of CPU and GPU arrays.",
     author="Pietro Ferraiuolo",
     author_email="pietro.ferraiuolo@inaf.it",
-    packages=["xupy"],
+    packages=find_packages(),  # ["xupy", "xupy.ma"],
     install_requires=["numpy"],
     python_requires=">=3.10",
     cmdclass={

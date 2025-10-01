@@ -21,4 +21,4 @@ dependencies = [
 Homepage = "https://github.com/pietroferraiuolo/XuPy"
 
 [tool.setuptools]
-packages = ["xupy", "xupy._cupy_install"]
+packages = ["xupy", "xupy._cupy_install", "xupy.ma"]
