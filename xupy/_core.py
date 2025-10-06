@@ -19,7 +19,6 @@ __check__.xupy_init()
 del __check__
 
 try:
-    from cupy import *  # type: ignore
     import cupy as _xp
 
     n_gpus = _xp.cuda.runtime.getDeviceCount()
@@ -50,6 +49,7 @@ try:
     del a  # cleanup
     gc.collect()
     _GPU = True
+    from cupy import *  # type: ignore
 
 except Exception as err:
     print(
