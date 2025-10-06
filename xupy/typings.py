@@ -6,14 +6,21 @@ from numpy.ma import masked_array
 Array = NDArray[Any]
 Scalar = Union[int, float, complex]
 
+
 @runtime_checkable
 class XupyMaskedArrayProtocol(Protocol):
     """Protocol defining the interface for XuPy masked arrays."""
+
     data: Array
     _mask: Array
-    
-    def __init__(self, data: ArrayLike, mask: Optional[ArrayLike] = None, dtype: Optional[DTypeLike] = None) -> None: ...
-    
+
+    def __init__(
+        self,
+        data: ArrayLike,
+        mask: Optional[ArrayLike] = None,
+        dtype: Optional[DTypeLike] = None,
+    ) -> None: ...
+
     # Core properties
     @property
     def mask(self) -> Array: ...
@@ -25,13 +32,14 @@ class XupyMaskedArrayProtocol(Protocol):
     def size(self) -> int: ...
     @property
     def ndim(self) -> int: ...
-    
+
     # Conversion methods
     def asmarray(self, **kwargs: Any) -> masked_array: ...
-    
+
     # String representation
     def __repr__(self) -> str: ...
     def __str__(self) -> str: ...
+
 
 # Main type for XuPy masked arrays
 XupyMaskedArray = XupyMaskedArrayProtocol

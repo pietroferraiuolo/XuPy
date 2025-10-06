@@ -62,38 +62,40 @@ except Exception as err:
 
 on_gpu = _GPU
 
+
 # --- NUMPY Context manager ---
 class NumpyContext:
     """Context manager that provides direct access to NumPy functions.
-    
+
     This context manager allows you to use NumPy functions directly while keeping
     XuPy functions unchanged. Inside the context, you get a `np` reference that
     points to NumPy functions.
-    
+
     Example:
         import xupy as xp
-        
+
         with xp.NumpyContext() as np:
             # np.array creates NumPy arrays
             numpy_arr = np.array([1, 2, 3])
-            
+
             # xp.array creates CuPy arrays (when on_gpu=True) or NumPy arrays (when on_gpu=False)
             xupy_arr = xp.array([1, 2, 3])
     """
+
     def __init__(self):
         if _GPU:
             self.original_device = _xp.cuda.runtime.getDevice()
         else:
             self.original_device = None
-            
+
     def __enter__(self):
         """Enter numpy context - return numpy module for direct access."""
         return _np
-        
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Exit numpy context."""
         pass
-        
+
     def __repr__(self) -> str:
         """String representation of the context manager."""
         if _GPU:
@@ -101,8 +103,9 @@ class NumpyContext:
         else:
             return "NumpyContext(no_gpu=True)"
 
+
 if _GPU:
-    
+
     float = _xp.float32
     double = _xp.float64
     cfloat = _xp.complex64
@@ -110,7 +113,7 @@ if _GPU:
 
     np = _np
     npma = _np.ma
-    
+
     def set_device(device_id: int) -> None:
         """
         Sets the default CUDA device for computations (cupy).
@@ -143,7 +146,6 @@ if _GPU:
             warnings.warn(
                 f"[XuPy] Device {device_id} is already the current device", UserWarning
             )
-
 
     # --- GPU Memory Management Context Manager ---
     class MemoryContext:
@@ -676,4 +678,3 @@ else:
         if isinstance(array, _np.ma.MaskedArray):
             return array.data
         return array
-

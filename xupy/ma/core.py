@@ -4,9 +4,11 @@ XUPY MASKED ARRAY
 
 This module provides a comprehensive masked array wrapper for CuPy arrays with NumPy-like interface.
 """
+
 import xupy as _xp
 import numpy as _np
 from .. import typings as _t
+
 
 class _XupyMaskedArray:
     """
@@ -433,9 +435,7 @@ class _XupyMaskedArray:
         """Return a flattened array."""
         return self.flatten(order=order)
 
-    def squeeze(
-        self, axis: _t.Optional[tuple[int, ...]] = None
-    ) -> "_XupyMaskedArray":
+    def squeeze(self, axis: _t.Optional[tuple[int, ...]] = None) -> "_XupyMaskedArray":
         """Remove single-dimensional entries from the shape of an array."""
         new_data = self.data.squeeze(axis=axis)
         new_mask = self._mask.squeeze(axis=axis)
@@ -1144,6 +1144,7 @@ class _XupyMaskedArray:
             dtype=dtype,
             **kwargs,
         )
+
 
 MaskedArray = masked_array = _XupyMaskedArray
 

@@ -24,20 +24,20 @@ def get_cuda_version():
     success, stdout, stderr = run_command("nvcc --version")
     if success:
         # Parse version from nvcc output
-        match = re.search(r'release (\d+)\.(\d+)', stdout)
+        match = re.search(r"release (\d+)\.(\d+)", stdout)
         if match:
             major, minor = match.groups()
             return f"{major}.{minor}"
-    
+
     # Fallback to nvidia-smi
     success, stdout, stderr = run_command("nvidia-smi")
     if success:
         # Parse CUDA version from nvidia-smi
-        match = re.search(r'CUDA Version: (\d+)\.(\d+)', stdout)
+        match = re.search(r"CUDA Version: (\d+)\.(\d+)", stdout)
         if match:
             major, minor = match.groups()
             return f"{major}.{minor}"
-    
+
     return None
 
 
