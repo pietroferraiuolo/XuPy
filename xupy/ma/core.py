@@ -5,9 +5,12 @@ XUPY MASKED ARRAY
 This module provides a comprehensive masked array wrapper for CuPy arrays with NumPy-like interface.
 """
 
-import xupy as _xp
+from .. import _core as _xp
 import numpy as _np
 from .. import typings as _t
+
+MaskType = _xp.bool_
+nomask = MaskType(0)
 
 
 class _XupyMaskedArray:
@@ -252,13 +255,13 @@ class _XupyMaskedArray:
     def __init__(
         self,
         data: _t.ArrayLike,
-        mask: _t.ArrayLike = None,
-        dtype: _t.DTypeLike = None,
-        fill_value: _t.Scalar = None,
+        mask: _t.Optional[_t.ArrayLike] = None,
+        dtype: _t.Optional[_t.DTypeLike] = None,
+        fill_value: _t.Optional[_t.Scalar] = None,
         keep_mask: bool = True,
         hard_mask: bool = False,
         order: _t.Optional[str] = None,
-    ):
+    ) -> None:
         """The constructor"""
 
         self._dtype = dtype
@@ -273,11 +276,12 @@ class _XupyMaskedArray:
                         self._mask = _xp.asarray(data.mask, dtype=bool)
                     except Exception as e:
                         print(f"Failed to retrieve mask from data: {e}")
-                        self._mask = _xp.zeros(self.data.shape, dtype=bool)
+                        self._mask = nomask
                 else:
-                    self._mask = _xp.zeros(self.data.shape, dtype=bool)
+                    self._mask = nomask
         else:
             self._mask = _xp.asarray(mask, dtype=bool)
+            self._has_no_mask = False
 
         self._is_hard_mask = hard_mask
 
@@ -338,7 +342,7 @@ class _XupyMaskedArray:
         """
         import builtins
 
-        prefix = f"xupy_masked_array("
+        prefix = f"masked_array("
 
         dtype_needed = (
             not _np.core.arrayprint.dtype_is_implied(self.dtype)
@@ -1145,7 +1149,104 @@ class _XupyMaskedArray:
             **kwargs,
         )
 
-
 MaskedArray = masked_array = _XupyMaskedArray
+
+
+def getmask(arr: _t.ArrayLike) -> MaskType:
+    """
+    Return the mask of a masked array, or nomask.
+
+    Return the mask of `a` as an ndarray if `a` is a `MaskedArray` and the
+    mask is not `nomask`, else return `nomask`. To guarantee a full array
+    of booleans of the same shape as a, use `getmaskarray`.
+
+    Parameters
+    ----------
+    a : array_like
+        Input `MaskedArray` for which the mask is required.
+
+    See Also
+    --------
+    getdata : Return the data of a masked array as an ndarray.
+    getmaskarray : Return the mask of a masked array, or full array of False.
+
+    Examples
+    --------
+    >>> import xupy.ma as ma
+    >>> x = ma.masked_array([[1,2],[3,4]], mask=[[False, True], [False, False]])
+    >>> x
+    masked_array(
+      data=[[1, --],
+            [3, 4]],
+      mask=[[False,  True],
+            [False, False]],
+      fill_value=2)
+    >>> ma.getmask(x)
+    array([[False,  True],
+           [False, False]])
+    """
+    return getattr(arr, "_mask", nomask)
+
+
+def getmaskarray(arr: _t.ArrayLike) -> MaskType:
+    """
+    Return the mask of a masked array, or full array of False.
+    
+    Return the mask of `arr` as an ndarray if `arr` is a `MaskedArray` and
+    the mask is not `nomask`, else return a full boolean array of False of
+    the same shape as `arr`.
+
+    Parameters
+    ----------
+    arr : array_like
+        Input `MaskedArray` for which the mask is required.
+
+    See Also
+    --------
+    getmask : Return the mask of a masked array, or nomask.
+    getdata : Return the data of a masked array as an ndarray.
+
+    Examples
+    --------
+    >>> import xupy.ma as ma
+    >>> x = ma.masked_array([[1,2],[3,4]], mask=[[False, True], [False, False]])
+    >>> x
+    masked_array(
+      data=[[1, --],
+            [3, 4]],
+      mask=[[False,  True],
+            [False, False]],
+      fill_value=2)
+    >>> ma.getmaskarray(x)
+    array([[False,  True],
+           [False, False]])
+
+    Result when mask == ``nomask``
+
+    >>> x = ma.masked_array([[1,2],[3,4]])
+    >>> x
+    masked_array(
+      data=[[1, 2],
+            [3, 4]],
+      mask=False,
+      fill_value=999999)
+    >>> ma.getmaskarray(x)
+    array([[False, False],
+           [False, False]])
+    """
+    mask = getmask(arr)
+    if mask is nomask:
+        mask = _xp.zeros(_np.shape(arr), getattr(arr, 'dtype', MaskType))
+    return mask
+
+
+def is_mask(m: _t.ArrayLike) -> bool:
+    """
+    Check if a mask is a mask.
+    """
+    try:
+        return m.dtype.type is MaskType
+    except AttributeError:
+        return False
 
 __all__ = ["MaskedArray", "masked_array"]
