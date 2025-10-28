@@ -19,7 +19,7 @@ __check__.xupy_init()
 del __check__
 
 try:
-    import cupy as _xp
+    import cupy as _xp # type: ignore
 
     n_gpus = _xp.cuda.runtime.getDeviceCount()
     if n_gpus > 1:
@@ -54,8 +54,8 @@ try:
 except Exception as err:
     print(
         """
-[XuPy] GPU Acceleration not available. 
-       Fallback to NumPy instead."""
+[XuPy] GPU Acceleration unavailable. 
+       Using NumPy."""
     )
     _GPU = False  # just to be sure ...
     from numpy import *  # type: ignore

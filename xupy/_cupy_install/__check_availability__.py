@@ -1,4 +1,5 @@
 import os
+from .__install_cupy__ import get_cuda_version
 
 
 def _read_code():
@@ -36,7 +37,7 @@ def xupy_init():
 
     try:
         # Try to import CuPy, to check whether it's installed
-        import cupy as xp
+        import cupy as xp # type: ignore
 
         arr = xp.array([1, 2, 3])  # test array
         del arr  # cleanup
@@ -49,6 +50,9 @@ def xupy_init():
 
         print(err, "\n")
         print("[XuPy] GPU Acceleration not available.")
+        if get_cuda_version() is None:
+            print("       CUDA not detected: missing GPU or drivers.")
+            return
         yn = input("       Attempt to install CuPy? (y/n): ")
         code = _read_code()
         code[4] = f"ASKED_FOR_CUPY = True\n"
@@ -68,7 +72,7 @@ def xupy_init():
                 main()
                 # Try again after installation
 
-                import cupy as _xp
+                import cupy as _xp # type: ignore
                 import gc
 
                 a = _xp.array([1, 2, 3])  # test array

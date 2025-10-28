@@ -49,6 +49,8 @@ def get_cupy_package(cuda_version):
         return "cupy-cuda11x"
     elif cuda_version.startswith("12."):
         return "cupy-cuda12x"
+    elif cuda_version.startswith("13."):
+        return "cupy-cuda13x"
     else:
         print(f"       Unsupported CUDA version: {cuda_version}")
         return None
