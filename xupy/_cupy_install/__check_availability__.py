@@ -49,9 +49,10 @@ def xupy_init():
         # Prompt user to install CuPy
 
         print(err, "\n")
-        print("[XuPy] GPU Acceleration not available.")
+        print("[XuPy] GPU Acceleration unavailable.")
         if get_cuda_version() is None:
             print("       CUDA not detected: missing GPU or drivers.")
+            print("       Using CPU (NumPy).")
             return
         yn = input("       Attempt to install CuPy? (y/n): ")
         code = _read_code()

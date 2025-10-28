@@ -15,6 +15,7 @@ from ._cupy_install import __check_availability__ as __check__
 _GPU = False
 
 __check__.xupy_init()
+__cuda_version__ = __check__.get_cuda_version()
 
 del __check__
 
@@ -52,11 +53,12 @@ try:
     from cupy import *  # type: ignore
 
 except Exception as err:
-    print(
-        """
-[XuPy] GPU Acceleration unavailable. 
-       Using NumPy."""
-    )
+    if not __cuda_version__ is None:
+        print(
+            f"""
+[XuPy] GPU Acceleration unavailable.
+       Using CPU (NumPy)."""
+        )
     _GPU = False  # just to be sure ...
     from numpy import *  # type: ignore
 
