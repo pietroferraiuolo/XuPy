@@ -8,7 +8,7 @@ from .core import (
     MaskType, nomask, MaskedArray, masked_array, getmask, getmaskarray,
 )
 import numpy as _np
-import cupy as _cp
+import cupy as _cp          # type: ignore
 from .. import typings as _t
 
 
@@ -144,7 +144,52 @@ def flatten_inplace(seq: _t.ArrayLike) -> _t.ArrayLike:
         k += 1
     return seq
 
+def sum(a: _t.ArrayLike, axis: _t.Optional[int] = None, dtype: _t.Optional[_t.DTypeLike] = None,
+        out: _t.Optional[_t.ArrayLike] = None, keepdims: bool = False) -> _t.ArrayLike:
+    """
+    Return the sum of array elements over a given axis.
 
+    Parameters
+    ----------
+    a : array_like
+        Elements to sum.
+        Masked entries are not taken into account in the computation.
+    axis : int, optional
+        Axis along which the sum is computed. If None, sum over
+        the flattened array.
+    dtype : dtype, optional
+        The type used in the summation.
+    out : array, optional
+        A location into which the result is stored.
+    keepdims : bool, optional
+        If this is set to True, the axes which are reduced are left
+        in the result as dimensions with size one. With this option,
+        the result will broadcast correctly against the original `a`.
+
+    Returns
+    -------
+    sum_along_axis : MaskedArray
+        An array with the same shape as `a`, with the specified axis removed.
+        If `out` is specified, a reference to it is returned.
+
+    """
+    a = _cp.asarray(a)
+    m = getmask(a)
+
+    if keepdims is False:
+        # Don't pass on the keepdims argument if one wasn't given.
+        keepdims_kw = {}
+    else:
+        keepdims_kw = {'keepdims': keepdims}
+
+    if m is not nomask:
+        sum_result = MaskedArray(a, mask=m).sum(axis=axis, dtype=dtype,
+                                                 out=out, **keepdims_kw)
+    else:
+        sum_result = _cp.sum(a, axis=axis, dtype=dtype,
+                             out=out, **keepdims_kw)
+
+    return sum_result
 
 def average(a: _t.ArrayLike, axis: _t.Optional[int] = None, weights: _t.Optional[_t.ArrayLike] = None, returned: bool = False, *,
             keepdims: bool = False):
