@@ -22,6 +22,7 @@ del __check__
 try:
     import cupy as _xp # type: ignore
 
+    _B2mb_ = 1024 * 1000  # using MB = 1,000,000 bytes
     n_gpus = _xp.cuda.runtime.getDeviceCount()
     if n_gpus > 1:
         gpus = {}
@@ -32,12 +33,12 @@ try:
             gpu = _xp.cuda.runtime.getDeviceProperties(g)
             gpu_name = gpu["name"].decode()
             gpus[g] = gpu_name
-            line1 += f"       - gpu_id {g} : {gpu_name} | Memory = {gpu['totalGlobalMem'] / (1000 * 1024):.2f} MB | Compute Capability = {gpu['major']}.{gpu['minor']}\n"
+            line1 += f"       - gpu_id {g} : {gpu_name} | Memory = {gpu['totalGlobalMem'] / _B2mb_:.2f} MB | Compute Capability = {gpu['major']}.{gpu['minor']}\n"
     else:
         gpu = _xp.cuda.runtime.getDeviceProperties(0)
         gpu_name = gpu["name"].decode()
         line1 = f"[XuPy] Device {_xp.cuda.runtime.getDevice()} available - GPU : `{gpu_name}`\n"
-        line1 += f"       Memory = {_xp.cuda.runtime.getDeviceProperties(0)['totalGlobalMem'] / (1000 * 1024):.2f} MB | Compute Capability = {_xp.cuda.runtime.getDeviceProperties(0)['major']}.{_xp.cuda.runtime.getDeviceProperties(0)['minor']}\n"
+        line1 += f"       Memory = {_xp.cuda.runtime.getDeviceProperties(0)['totalGlobalMem'] / _B2mb_:.2f} MB | Compute Capability = {_xp.cuda.runtime.getDeviceProperties(0)['major']}.{_xp.cuda.runtime.getDeviceProperties(0)['minor']}\n"
     print(
         f"""
 {line1}       Using CuPy {_xp.__version__} for acceleration."""
@@ -248,17 +249,17 @@ if _GPU:
                     if "used" in final_mem:
                         memory_delta = final_mem["used"] - self._initial_memory
                         print(f"[MemoryContext] Session completed in {duration:.2f}s")
+                        # print(
+                        #     f"[MemoryContext] Initial memory: {self._initial_memory / (_B2mb_):.2f} MB"
+                        # )
+                        # print(
+                        #     f"[MemoryContext] Peak memory: {self._peak_memory / (_B2mb_):.2f} MB"
+                        # )
+                        # print(
+                        #     f"[MemoryContext] Final memory: {final_mem['used'] / (_B2mb_):.2f} MB"
+                        # )
                         print(
-                            f"[MemoryContext] Initial memory: {self._initial_memory / (1024**3):.2f} GB"
-                        )
-                        print(
-                            f"[MemoryContext] Peak memory: {self._peak_memory / (1024**3):.2f} GB"
-                        )
-                        print(
-                            f"[MemoryContext] Final memory: {final_mem['used'] / (1024**3):.2f} GB"
-                        )
-                        print(
-                            f"[MemoryContext] Memory delta: {memory_delta / (1024**3):.2f} GB"
+                            f"[MemoryContext] Memory delta: {memory_delta / (_B2mb_):.2f} MB"
                         )
                         if self._cleanup_count > 0:
                             print(
@@ -378,10 +379,10 @@ if _GPU:
                 # Force CUDA to free unused memory
                 _xp.cuda.runtime.deviceSynchronize()
                 # Try to trigger memory defragmentation
-                free, total = _xp.cuda.runtime.memGetInfo()
-                print(
-                    f"[MemoryContext] CUDA memory after cleanup: {free/(1024**3):.2f}/{total/(1024**3):.2f} GB"
-                )
+                # free, total = _xp.cuda.runtime.memGetInfo()
+                # print(
+                #     f"[MemoryContext] CUDA memory after cleanup: {free/(_B2mb_):.2f}/{total/(_B2mb_):.2f} MB"
+                # )
             except Exception as e:
                 print(f"Warning: Could not get CUDA memory info: {e}")
 
@@ -564,10 +565,10 @@ if _GPU:
                     max_used = _b.max(used_values)
                     avg_used = _b.sum(used_values) / len(used_values)
 
-                    print(f"[MemoryContext] Memory monitoring summary:")
-                    print(f"  Min: {min_used / (1024**3):.2f} GB")
-                    print(f"  Max: {max_used / (1024**3):.2f} GB")
-                    print(f"  Avg: {avg_used / (1024**3):.2f} GB")
+                    print(f"[MemoryContext] Monitoring summary:")
+                    print(f"  Min: {min_used / (_B2mb_):.2f} MB")
+                    print(f"  Max: {max_used / (_B2mb_):.2f} MB")
+                    print(f"  Avg: {avg_used / (_B2mb_):.2f} MB")
 
         def force_memory_deallocation(self):
             """Force memory deallocation by creating pressure on the memory pool."""
@@ -578,9 +579,9 @@ if _GPU:
             try:
                 # Get current memory info
                 free_before, total = _xp.cuda.runtime.memGetInfo()
-                print(
-                    f"[MemoryContext] Memory before forced deallocation: {free_before/(1024**3):.2f}/{total/(1024**3):.2f} GB"
-                )
+                # print(
+                #     f"[MemoryContext] Memory before forced deallocation: {free_before/(_B2mb_):.2f}/{total/(_B2mb_):.2f} MB"
+                # )
 
                 # Try to allocate a large chunk to force pool cleanup
                 # This will fail if there's not enough memory, but that's okay
@@ -612,10 +613,10 @@ if _GPU:
                 # Check memory after
                 free_after, _ = _xp.cuda.runtime.memGetInfo()
                 freed = free_after - free_before
-                print(
-                    f"[MemoryContext] Memory after forced deallocation: {free_after/(1024**3):.2f}/{total/(1024**3):.2f} GB"
-                )
-                print(f"[MemoryContext] Memory freed: {freed/(1024**3):.2f} GB")
+                # print(
+                #     f"[MemoryContext] Memory after forced deallocation: {free_after/(_B2mb_):.2f}/{total/(_B2mb_):.2f} MB"
+                # )
+                print(f"[MemoryContext] Memory freed: {freed/(_B2mb_):.2f} MB")
 
             except Exception as e:
                 print(f"Warning: Could not force memory deallocation: {e}")
@@ -662,12 +663,11 @@ if _GPU:
                     f"MemoryContext(device={self.device_id}, error={mem_info['error']})"
                 )
 
-            used_gb = mem_info.get("used", 0) / (1024**3)
-            total_gb = mem_info.get("total", 0) / (1024**3)
+            used_mb = mem_info.get("used", 0) / (_B2mb_)
+            total_mb = mem_info.get("total", 0) / (_B2mb_)
             percent = mem_info.get("memory_percent", 0) * 100
 
-            return f"MemoryContext(device={mem_info.get('device')}, memory={used_gb:.2f}/{total_gb:.2f} GB ({percent:.1f}%))"
-
+            return f"MemoryContext(device={mem_info.get('device')}, memory={used_mb:.2f}/{total_mb:.2f} MB ({percent:.1f}%))"
 else:
 
     float = double = _np.float64

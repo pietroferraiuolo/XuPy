@@ -294,9 +294,12 @@ class _XupyMaskedArray:
         """The constructor"""
 
         self._dtype = dtype
-        self.data = _xp.asarray(
-            data, dtype=dtype if dtype else _xp.float32, order=order
-        )
+        # Don't force dtype conversion if not specified - let CuPy/NumPy decide
+        # This preserves the input dtype and avoids precision loss
+        if dtype is not None:
+            self.data = _xp.asarray(data, dtype=dtype, order=order)
+        else:
+            self.data = _xp.asarray(data, order=order)
 
         if mask is None:
             if keep_mask is True:
@@ -458,14 +461,206 @@ class _XupyMaskedArray:
 
     def _insert_masked_print(self):
         """
-        Replace masked values with masked_print_option, casting all innermost
-        dtypes to object.
+        Replace masked values with '--' for printing, handling large arrays efficiently.
+        
+        For large arrays (exceeding NumPy's print threshold), this method only
+        transfers the edge items from GPU to CPU to avoid memory issues and
+        potential segmentation faults.
         """
-        data = _xp.asnumpy(self.data)
-        mask = _xp.asnumpy(self._mask)
-        display = data.astype(object)
-        display[mask] = "--"
-        return display
+        # Get NumPy's print options to respect threshold settings
+        threshold = _np.get_printoptions()['threshold']
+        
+        # For small arrays or when threshold is sys.maxsize, transfer everything
+        import sys
+        if self.size <= threshold or threshold == sys.maxsize:
+            # Small array or threshold disabled - safe to transfer entirely
+            data = _xp.asnumpy(self.data)
+            mask = _xp.asnumpy(self._mask)
+            display = data.astype(object)
+            display[mask] = "--"
+            return display
+        
+        # Large array - only transfer edges that will be displayed
+        # Get edge items setting (how many items to show at start/end of each axis)
+        edgeitems = _np.get_printoptions()['edgeitems']
+        
+        # Strategy: Convert to numpy.ma.MaskedArray and let NumPy handle the printing
+        # But only transfer the edge items to minimize GPU->CPU transfer
+        
+        # For 1D arrays
+        if self.ndim == 1:
+            if self.size > 2 * edgeitems:
+                # Transfer only edges
+                data_head = _xp.asnumpy(self.data[:edgeitems])
+                data_tail = _xp.asnumpy(self.data[-edgeitems:])
+                
+                # Handle mask
+                if self._mask is nomask:
+                    mask_head = _np.zeros(data_head.shape, dtype=bool)
+                    mask_tail = _np.zeros(data_tail.shape, dtype=bool)
+                else:
+                    mask_head = _xp.asnumpy(self._mask[:edgeitems])
+                    mask_tail = _xp.asnumpy(self._mask[-edgeitems:])
+                
+                # Create compact arrays for display
+                data_compact = _np.concatenate([data_head, data_tail])
+                mask_compact = _np.concatenate([mask_head, mask_tail])
+                
+                # Convert to object array with masked values
+                display = data_compact.astype(object)
+                display[mask_compact] = "--"
+                
+                # Insert ellipsis marker (NumPy will handle it in array2string)
+                display = _np.concatenate([
+                    display[:edgeitems],
+                    _np.array(['...'], dtype=object),
+                    display[edgeitems:]
+                ])
+                return display
+            else:
+                # Transfer all
+                data = _xp.asnumpy(self.data)
+                
+                # Handle mask
+                if self._mask is nomask:
+                    mask = _np.zeros(data.shape, dtype=bool)
+                else:
+                    mask = _xp.asnumpy(self._mask)
+                
+                display = data.astype(object)
+                display[mask] = "--"
+                return display
+        
+        # For multi-dimensional arrays (2D is most common)
+        elif self.ndim == 2:
+            nrows, ncols = self.shape
+            
+            # Determine which rows and columns to extract
+            if nrows > 2 * edgeitems:
+                row_indices = list(range(edgeitems)) + list(range(nrows - edgeitems, nrows))
+                need_row_ellipsis = True
+            else:
+                row_indices = list(range(nrows))
+                need_row_ellipsis = False
+            
+            if ncols > 2 * edgeitems:
+                col_head = slice(0, edgeitems)
+                col_tail = slice(ncols - edgeitems, ncols)
+                need_col_ellipsis = True
+            else:
+                col_head = slice(None)
+                col_tail = None
+                need_col_ellipsis = False
+            
+            # Transfer only the required corners
+            if need_col_ellipsis:
+                # Extract top-left, top-right, bottom-left, bottom-right corners
+                data_parts = []
+                
+                for idx in row_indices:
+                    row_data_head = _xp.asnumpy(self.data[idx, col_head])
+                    row_data_tail = _xp.asnumpy(self.data[idx, col_tail])
+                    
+                    # Handle mask
+                    if self._mask is nomask:
+                        row_mask_head = _np.zeros(row_data_head.shape, dtype=bool)
+                        row_mask_tail = _np.zeros(row_data_tail.shape, dtype=bool)
+                    else:
+                        row_mask_head = _xp.asnumpy(self._mask[idx, col_head])
+                        row_mask_tail = _xp.asnumpy(self._mask[idx, col_tail])
+                    
+                    # Combine head and tail for this row
+                    row_data = _np.concatenate([row_data_head, row_data_tail])
+                    row_mask = _np.concatenate([row_mask_head, row_mask_tail])
+                    
+                    # Convert to object and apply mask
+                    row_display = row_data.astype(object)
+                    row_display[row_mask] = "--"
+                    
+                    # Insert column ellipsis
+                    row_display = _np.concatenate([
+                        row_display[:edgeitems],
+                        _np.array(['...'], dtype=object),
+                        row_display[edgeitems:]
+                    ])
+                    data_parts.append(row_display)
+                
+                # Stack rows
+                if need_row_ellipsis:
+                    # Insert row ellipsis
+                    ellipsis_row = _np.full((1, len(data_parts[0])), '...', dtype=object)
+                    display = _np.vstack([
+                        _np.vstack(data_parts[:edgeitems]),
+                        ellipsis_row,
+                        _np.vstack(data_parts[edgeitems:])
+                    ])
+                else:
+                    display = _np.vstack(data_parts)
+            else:
+                # Only need row ellipsis (or no ellipsis)
+                data_parts = []
+                for idx in row_indices:
+                    row_data = _xp.asnumpy(self.data[idx, :])
+                    
+                    # Handle mask
+                    if self._mask is nomask:
+                        row_mask = _np.zeros(row_data.shape, dtype=bool)
+                    else:
+                        row_mask = _xp.asnumpy(self._mask[idx, :])
+                    
+                    row_display = row_data.astype(object)
+                    row_display[row_mask] = "--"
+                    data_parts.append(row_display)
+                
+                if need_row_ellipsis:
+                    ellipsis_row = _np.full((1, data_parts[0].shape[0]), '...', dtype=object)
+                    display = _np.vstack([
+                        _np.vstack(data_parts[:edgeitems]),
+                        ellipsis_row,
+                        _np.vstack(data_parts[edgeitems:])
+                    ])
+                else:
+                    display = _np.vstack(data_parts)
+            
+            return display
+        
+        else:
+            # For higher dimensional arrays (3D+), we use a simplified approach
+            # Transfer more data but still limit based on edgeitems
+            # This is a safety fallback - could be optimized further
+            
+            # Build slice objects for each dimension
+            slices = []
+            for axis_size in self.shape:
+                if axis_size > 2 * edgeitems:
+                    # Create indices for edges
+                    indices = list(range(edgeitems)) + list(range(axis_size - edgeitems, axis_size))
+                    slices.append(indices)
+                else:
+                    slices.append(slice(None))
+            
+            # Use numpy's advanced indexing to extract only edges
+            # For simplicity, just transfer edges along first 2 dimensions
+            if len(slices) >= 2:
+                # Extract a subset
+                idx0 = slices[0] if isinstance(slices[0], slice) else slices[0]
+                idx1 = slices[1] if isinstance(slices[1], slice) else slices[1]
+                remaining_slices = tuple(slices[2:])
+                
+                # This gets complex, so for now transfer more data
+                # Could be optimized with more sophisticated indexing
+                data = _xp.asnumpy(self.data)
+                mask = _xp.asnumpy(self._mask)
+                display = data.astype(object)
+                display[mask] = "--"
+                return display
+            else:
+                # Fallback
+                data = _xp.asnumpy(self.data)
+                mask = _xp.asnumpy(self._mask)
+                display = data.astype(object)
+                display[mask] = "--"
+                return display
 
     # --- Array Manipulation Methods ---
     def reshape(self, *shape: int) -> "_XupyMaskedArray":
