@@ -523,6 +523,19 @@ class _XupyMaskedArray:
         return _XupyMaskedArray(new_data, new_mask)
 
     # --- Statistical Methods (Memory-Optimized) ---
+    def _extract_scalar_if_0d(self, result: _t.Any) -> _t.Any:
+        """
+        Extract Python scalar from 0-dimensional array for NumPy compatibility.
+        
+        If result is a 0-dimensional CuPy/NumPy array, extract the scalar value.
+        Otherwise, return as-is. This ensures compatibility with NumPy's behavior
+        where reductions return scalars when appropriate.
+        """
+        if isinstance(result, (_xp.ndarray, _np.ndarray)):
+            if result.ndim == 0:
+                return result.item()
+        return result
+
     def mean(self, axis: _t.Optional[int] = None, **kwargs: dict[str, _t.Any]) -> _t.Scalar:
         """Compute the arithmetic mean along the specified axis.
         
@@ -568,21 +581,27 @@ class _XupyMaskedArray:
         if axis is None:
             # Global mean
             if self._mask is nomask:
-                return _xp.mean(self.data)
+                result = _xp.mean(self.data)
             else:
                 unmasked_data = self.data[~self._mask]
                 if unmasked_data.size == 0:
                     return masked
-                return _xp.mean(unmasked_data)
+                result = _xp.mean(unmasked_data)
+            return self._extract_scalar_if_0d(result)
         else:
             # Mean along specific axis - use CuPy operations
             if self._mask is nomask:
-                return _xp.mean(self.data, axis=axis, **kwargs)
+                result = _xp.mean(self.data, axis=axis, **kwargs)
             else:
                 # Create a copy of data and set masked values to NaN
                 data_copy = self.data.copy()
                 data_copy[self._mask] = _xp.nan
-                return _xp.nanmean(data_copy, axis=axis, **kwargs)
+                result = _xp.nanmean(data_copy, axis=axis, **kwargs)
+            # Extract scalar for NumPy compatibility when result is 0-d
+            keepdims = kwargs.get('keepdims', False)
+            if not keepdims:
+                return self._extract_scalar_if_0d(result)
+            return result
 
     def sum(self, axis: _t.Optional[int] = None, **kwargs: dict[str, _t.Any]) -> _t.Scalar:
         """Sum of array elements over a given axis.
@@ -629,21 +648,27 @@ class _XupyMaskedArray:
         if axis is None:
             # Global sum
             if self._mask is nomask:
-                return _xp.sum(self.data)
+                result = _xp.sum(self.data)
             else:
                 unmasked_data = self.data[~self._mask]
                 if unmasked_data.size == 0:
                     return masked
-                return _xp.sum(unmasked_data)
+                result = _xp.sum(unmasked_data)
+            return self._extract_scalar_if_0d(result)
         else:
             # Sum along specific axis - use CuPy operations
             if self._mask is nomask:
-                return _xp.sum(self.data, axis=axis, **kwargs)
+                result = _xp.sum(self.data, axis=axis, **kwargs)
             else:
                 # Create a copy of data and set masked values to 0
                 data_copy = self.data.copy()
                 data_copy[self._mask] = 0
-                return _xp.sum(data_copy, axis=axis, **kwargs)
+                result = _xp.sum(data_copy, axis=axis, **kwargs)
+            # Extract scalar for NumPy compatibility when result is 0-d
+            keepdims = kwargs.get('keepdims', False)
+            if not keepdims:
+                return self._extract_scalar_if_0d(result)
+            return result
 
     def std(self, axis: _t.Optional[int] = None, **kwargs: dict[str, _t.Any]) -> _t.Scalar:
         """Compute the standard deviation along the specified axis.
@@ -678,13 +703,19 @@ class _XupyMaskedArray:
             unmasked_data = self.data[~self._mask]
             if unmasked_data.size == 0:
                 return _xp.nan
-            return _xp.std(unmasked_data)
+            result = _xp.std(unmasked_data)
+            return self._extract_scalar_if_0d(result)
         else:
             # Std along specific axis - use CuPy operations
             # Create a copy of data and set masked values to NaN
             data_copy = self.data.copy()
             data_copy[self._mask] = _xp.nan
-            return _xp.nanstd(data_copy, axis=axis, **kwargs)
+            result = _xp.nanstd(data_copy, axis=axis, **kwargs)
+            # Extract scalar for NumPy compatibility when result is 0-d
+            keepdims = kwargs.get('keepdims', False)
+            if not keepdims:
+                return self._extract_scalar_if_0d(result)
+            return result
 
     def var(self, axis: _t.Optional[int] = None, **kwargs: dict[str, _t.Any]) -> _t.Scalar:
         """Compute the variance along the specified axis.
@@ -719,13 +750,19 @@ class _XupyMaskedArray:
             unmasked_data = self.data[~self._mask]
             if unmasked_data.size == 0:
                 return _xp.nan
-            return _xp.var(unmasked_data)
+            result = _xp.var(unmasked_data)
+            return self._extract_scalar_if_0d(result)
         else:
             # Var along specific axis - use CuPy operations
             # Create a copy of data and set masked values to NaN
             data_copy = self.data.copy()
             data_copy[self._mask] = _xp.nan
-            return _xp.nanvar(data_copy, axis=axis, **kwargs)
+            result = _xp.nanvar(data_copy, axis=axis, **kwargs)
+            # Extract scalar for NumPy compatibility when result is 0-d
+            keepdims = kwargs.get('keepdims', False)
+            if not keepdims:
+                return self._extract_scalar_if_0d(result)
+            return result
 
     def min(self, axis: _t.Optional[int] = None, **kwargs: dict[str, _t.Any]) -> _t.Scalar:
         """Return the minimum along a given axis.
@@ -760,13 +797,19 @@ class _XupyMaskedArray:
             unmasked_data = self.data[~self._mask]
             if unmasked_data.size == 0:
                 return _xp.nan
-            return _xp.min(unmasked_data)
+            result = _xp.min(unmasked_data)
+            return self._extract_scalar_if_0d(result)
         else:
             # Min along specific axis - use CuPy operations
             # Create a copy of data and set masked values to NaN
             data_copy = self.data.copy()
             data_copy[self._mask] = _xp.nan
-            return _xp.nanmin(data_copy, axis=axis, **kwargs)
+            result = _xp.nanmin(data_copy, axis=axis, **kwargs)
+            # Extract scalar for NumPy compatibility when result is 0-d
+            keepdims = kwargs.get('keepdims', False)
+            if not keepdims:
+                return self._extract_scalar_if_0d(result)
+            return result
 
     def max(self, axis: _t.Optional[int] = None, **kwargs: dict[str, _t.Any]) -> _t.Scalar:
         """Return the maximum along a given axis.
@@ -801,13 +844,19 @@ class _XupyMaskedArray:
             unmasked_data = self.data[~self._mask]
             if unmasked_data.size == 0:
                 return _xp.nan
-            return _xp.max(unmasked_data)
+            result = _xp.max(unmasked_data)
+            return self._extract_scalar_if_0d(result)
         else:
             # Max along specific axis - use CuPy operations
             # Create a copy of data and set masked values to NaN
             data_copy = self.data.copy()
             data_copy[self._mask] = _xp.nan
-            return _xp.nanmax(data_copy, axis=axis, **kwargs)
+            result = _xp.nanmax(data_copy, axis=axis, **kwargs)
+            # Extract scalar for NumPy compatibility when result is 0-d
+            keepdims = kwargs.get('keepdims', False)
+            if not keepdims:
+                return self._extract_scalar_if_0d(result)
+            return result
 
     # --- Universal Functions Support ---
     def apply_ufunc(
