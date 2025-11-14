@@ -4,6 +4,10 @@ XUPY MASKED ARRAY
 
 This module provides a comprehensive masked array wrapper for CuPy arrays with NumPy-like interface.
 """
+# TODO
+# FIXME
+# fix `~mask` with `not mask` when working with booleans, as it is deprecated
+# and will be removed in python 3.16
 
 from .. import _core as _xp
 import numpy as _np
@@ -94,10 +98,11 @@ class _XupyMaskedArray:
     keep_mask : bool, optional
         Whether to combine `mask` with the mask of the input data, if any
         (True), or to use only `mask` for the output (False). Default is True.
-    hard_mask : bool, optional (Not Implemented Yet)
+    hard_mask : bool, optional
         If True, indicates that the mask should be treated as an immutable
-        "hard" mask. This influence is primarily semantic in this wrapper but
-        can be used by higher-level logic to avoid accidental unmasking.
+        "hard" mask. With a hard mask, masked values cannot be unmasked by
+        assignment. Use harden_mask() and soften_mask() to control this
+        behavior dynamically.
     order : {'C', 'F', 'A', None}, optional
         Memory order for array conversion if a copy is required. Behaves like
         numpy.asarray / cupy.asarray ordering.
@@ -246,36 +251,6 @@ class _XupyMaskedArray:
     cupy.ndarray : GPU-backed numerical arrays used as the data store.
 
     ----
-
-
-    A comprehensive masked array wrapper for CuPy arrays with NumPy-like interface.
-
-    Parameters
-    ----------
-    data : array-like
-        The input data array (will be converted to CuPy array).
-    mask : array-like
-        Mask. Must be convertible to an array of booleans with the same
-        shape as `data`. True indicates a masked (i.e. invalid) data.
-    dtype : data-type, optional
-        Desired data type for the output array. Defaults to `float32` for optimized
-        GPU performances on computations.
-    fill_value : scalar, optional
-        Value used to fill in the masked values when necessary.
-        If None, if the input `data` is a masked_array then the fill_value
-        will be taken from the masked_array's fill_value attribute,
-        otherwise a default based on the data-type is used.
-    keep_mask : bool, optional
-        Whether to combine `mask` with the mask of the input data, if any
-        (True), or to use only `mask` for the output (False). Default is True.
-    order : {'C', 'F', 'A'}, optional
-        Specify the order of the array.  If order is 'C', then the array
-        will be in C-contiguous order (last-index varies the fastest).
-        If order is 'F', then the returned array will be in
-        Fortran-contiguous order (first-index varies the fastest).
-        If order is 'A' (default), then the returned array may be
-        in any order (either C-, Fortran-contiguous, or even discontiguous),
-        unless a copy is required, in which case it will be C-contiguous.
     """
 
     _print_width = 100
@@ -320,6 +295,17 @@ class _XupyMaskedArray:
                 self._mask = nomask
             else:
                 self._mask = _xp.asarray(mask, dtype=bool)
+
+        # Validate and broadcast mask shape to match data shape
+        if self._mask is not nomask:
+            try:
+                # Try to broadcast mask to data shape
+                if self._mask.shape != self.data.shape:
+                    self._mask = _xp.broadcast_to(self._mask, self.data.shape).copy()
+            except ValueError:
+                raise ValueError(
+                    f"Mask shape {self._mask.shape} cannot be broadcast to data shape {self.data.shape}"
+                )
 
         self._is_hard_mask = hard_mask
 
@@ -731,6 +717,68 @@ class _XupyMaskedArray:
                 return result.item()
         return result
 
+    def _combine_masks(self, mask1: _t.Union[_xp.ndarray, _NomaskSingleton], mask2: _t.Union[_xp.ndarray, _NomaskSingleton]) -> _t.Union[_xp.ndarray, _NomaskSingleton]:
+        """
+        Combine two masks using OR operation, handling nomask properly.
+        
+        Parameters
+        ----------
+        mask1 : array-like or nomask
+            First mask.
+        mask2 : array-like or nomask
+            Second mask.
+            
+        Returns
+        -------
+        mask : array-like or nomask
+            Combined mask (OR of both masks).
+        """
+        if mask1 is nomask and mask2 is nomask:
+            return nomask
+        elif mask1 is nomask:
+            return mask2
+        elif mask2 is nomask:
+            return mask1
+        else:
+            return mask1 | mask2
+
+    def _detect_nan_inf(self, data: _xp.ndarray, existing_mask: _t.Union[_xp.ndarray, _NomaskSingleton]) -> _t.Union[_xp.ndarray, _NomaskSingleton]:
+        """
+        Detect NaN and infinity values in floating-point arrays and update mask.
+        
+        This helper function ensures that NaN and infinity values resulting from
+        operations (e.g., division by zero, sqrt of negative numbers) are properly
+        masked, matching numpy.ma behavior.
+        
+        Parameters
+        ----------
+        data : array-like
+            The data array to check for NaNs and infinities.
+        existing_mask : array-like or nomask
+            The existing mask to combine with NaN/infinity detection.
+            
+        Returns
+        -------
+        mask : array-like or nomask
+            Updated mask that includes NaN and infinity positions. Returns nomask
+            if no NaNs/infs are found and existing_mask is nomask.
+        """
+        # Only check for NaNs/infinities in floating-point types
+        if _xp.issubdtype(data.dtype, _xp.floating):
+            nan_mask = _xp.isnan(data) | _xp.isinf(data)
+            # Check if nan_mask has any True values
+            if _xp.any(nan_mask):
+                if existing_mask is nomask:
+                    return nan_mask
+                else:
+                    return existing_mask | nan_mask
+            else:
+                # No NaNs/infs found - return existing_mask as-is
+                return existing_mask
+        else:
+            # For non-floating types, return existing mask
+            return existing_mask
+
     def mean(self, axis: _t.Optional[int] = None, **kwargs: dict[str, _t.Any]) -> _t.Scalar:
         """Compute the arithmetic mean along the specified axis.
         
@@ -772,7 +820,7 @@ class _XupyMaskedArray:
                     _xp.ones(result_shape, dtype=bool)
                 )
         
-        # Use GPU operations for better performance
+        # Use GPU
         if axis is None:
             # Global mean
             if self._mask is nomask:
@@ -784,19 +832,31 @@ class _XupyMaskedArray:
                 result = _xp.mean(unmasked_data)
             return self._extract_scalar_if_0d(result)
         else:
-            # Mean along specific axis - use CuPy operations
-            if self._mask is nomask:
-                result = _xp.mean(self.data, axis=axis, **kwargs)
-            else:
-                # Create a copy of data and set masked values to NaN
-                data_copy = self.data.copy()
-                data_copy[self._mask] = _xp.nan
-                result = _xp.nanmean(data_copy, axis=axis, **kwargs)
-            # Extract scalar for NumPy compatibility when result is 0-d
+            # Mean along specific axis - return a masked array
             keepdims = kwargs.get('keepdims', False)
-            if not keepdims:
-                return self._extract_scalar_if_0d(result)
-            return result
+            if self._mask is nomask:
+                # No mask: wrap the result in a masked array with False mask
+                result_data = _xp.mean(self.data, axis=axis, **kwargs)
+                result_mask = _xp.zeros(result_data.shape, dtype=bool)
+                return _XupyMaskedArray(result_data, result_mask)
+            else:
+                # Compute mean using sum/count of unmasked values to avoid NaNs
+                masked_zero = _xp.where(self._mask, _xp.zeros_like(self.data), self.data)
+                sum_unmasked = _xp.sum(masked_zero, axis=axis, **kwargs)
+                count_unmasked = _xp.sum(~self._mask, axis=axis, keepdims=keepdims)
+                # Mask where there are no unmasked samples
+                result_mask = (count_unmasked == 0)
+                # Safe division: use count 1 where masked to avoid inf; values will be overwritten
+                safe_count = _xp.where(result_mask, _xp.ones_like(count_unmasked), count_unmasked)
+                result_data = sum_unmasked / safe_count
+                # For floats, fill masked positions with NaN (cosmetic; value is masked anyway)
+                try:
+                    is_float = _np.dtype(self.dtype).kind == "f"
+                except Exception:
+                    is_float = False
+                if is_float:
+                    result_data = _xp.where(result_mask, _xp.nan, result_data)
+                return _XupyMaskedArray(result_data, result_mask.astype(bool))
 
     def sum(self, axis: _t.Optional[int] = None, **kwargs: dict[str, _t.Any]) -> _t.Scalar:
         """Sum of array elements over a given axis.
@@ -851,19 +911,19 @@ class _XupyMaskedArray:
                 result = _xp.sum(unmasked_data)
             return self._extract_scalar_if_0d(result)
         else:
-            # Sum along specific axis - use CuPy operations
-            if self._mask is nomask:
-                result = _xp.sum(self.data, axis=axis, **kwargs)
-            else:
-                # Create a copy of data and set masked values to 0
-                data_copy = self.data.copy()
-                data_copy[self._mask] = 0
-                result = _xp.sum(data_copy, axis=axis, **kwargs)
-            # Extract scalar for NumPy compatibility when result is 0-d
+            # Sum along specific axis - return a masked array
             keepdims = kwargs.get('keepdims', False)
-            if not keepdims:
-                return self._extract_scalar_if_0d(result)
-            return result
+            if self._mask is nomask:
+                result_data = _xp.sum(self.data, axis=axis, **kwargs)
+                result_mask = _xp.zeros(result_data.shape, dtype=bool)
+                return _XupyMaskedArray(result_data, result_mask)
+            else:
+                # Zero-out masked values and sum
+                masked_zero = _xp.where(self._mask, _xp.zeros_like(self.data), self.data)
+                result_data = _xp.sum(masked_zero, axis=axis, **kwargs)
+                # Positions where all entries were masked remain masked
+                result_mask = _xp.all(self._mask, axis=axis, keepdims=keepdims)
+                return _XupyMaskedArray(result_data, result_mask.astype(bool))
 
     def std(self, axis: _t.Optional[int] = None, **kwargs: dict[str, _t.Any]) -> _t.Scalar:
         """Compute the standard deviation along the specified axis.
@@ -901,16 +961,25 @@ class _XupyMaskedArray:
             result = _xp.std(unmasked_data)
             return self._extract_scalar_if_0d(result)
         else:
-            # Std along specific axis - use CuPy operations
-            # Create a copy of data and set masked values to NaN
-            data_copy = self.data.copy()
-            data_copy[self._mask] = _xp.nan
-            result = _xp.nanstd(data_copy, axis=axis, **kwargs)
-            # Extract scalar for NumPy compatibility when result is 0-d
+            # Std along specific axis - return a masked array
             keepdims = kwargs.get('keepdims', False)
-            if not keepdims:
-                return self._extract_scalar_if_0d(result)
-            return result
+            if self._mask is nomask:
+                result_data = _xp.std(self.data, axis=axis, **kwargs)
+                result_mask = _xp.zeros(result_data.shape, dtype=bool)
+                return _XupyMaskedArray(result_data, result_mask)
+            else:
+                data_copy = self.data.copy()
+                data_copy[self._mask] = _xp.nan
+                result_data = _xp.nanstd(data_copy, axis=axis, **kwargs)
+                result_mask = _xp.all(self._mask, axis=axis, keepdims=keepdims)
+                # For floats, optionally set masked results to NaN
+                try:
+                    is_float = _np.dtype(self.dtype).kind == "f"
+                except Exception:
+                    is_float = False
+                if is_float:
+                    result_data = _xp.where(result_mask, _xp.nan, result_data)
+                return _XupyMaskedArray(result_data, result_mask.astype(bool))
 
     def var(self, axis: _t.Optional[int] = None, **kwargs: dict[str, _t.Any]) -> _t.Scalar:
         """Compute the variance along the specified axis.
@@ -948,16 +1017,24 @@ class _XupyMaskedArray:
             result = _xp.var(unmasked_data)
             return self._extract_scalar_if_0d(result)
         else:
-            # Var along specific axis - use CuPy operations
-            # Create a copy of data and set masked values to NaN
-            data_copy = self.data.copy()
-            data_copy[self._mask] = _xp.nan
-            result = _xp.nanvar(data_copy, axis=axis, **kwargs)
-            # Extract scalar for NumPy compatibility when result is 0-d
+            # Var along specific axis - return a masked array
             keepdims = kwargs.get('keepdims', False)
-            if not keepdims:
-                return self._extract_scalar_if_0d(result)
-            return result
+            if self._mask is nomask:
+                result_data = _xp.var(self.data, axis=axis, **kwargs)
+                result_mask = _xp.zeros(result_data.shape, dtype=bool)
+                return _XupyMaskedArray(result_data, result_mask)
+            else:
+                data_copy = self.data.copy()
+                data_copy[self._mask] = _xp.nan
+                result_data = _xp.nanvar(data_copy, axis=axis, **kwargs)
+                result_mask = _xp.all(self._mask, axis=axis, keepdims=keepdims)
+                try:
+                    is_float = _np.dtype(self.dtype).kind == "f"
+                except Exception:
+                    is_float = False
+                if is_float:
+                    result_data = _xp.where(result_mask, _xp.nan, result_data)
+                return _XupyMaskedArray(result_data, result_mask.astype(bool))
 
     def min(self, axis: _t.Optional[int] = None, **kwargs: dict[str, _t.Any]) -> _t.Scalar:
         """Return the minimum along a given axis.
@@ -989,22 +1066,28 @@ class _XupyMaskedArray:
         # Use GPU operations for better performance
         if axis is None:
             # Global min
-            unmasked_data = self.data[~self._mask]
-            if unmasked_data.size == 0:
-                return _xp.nan
+            if self._mask is not nomask:
+                unmasked_data = self.data[~self._mask]
+                if unmasked_data.size == 0:
+                    # All values are masked - return masked singleton (numpy.ma behavior)
+                    return masked
+            else:
+                unmasked_data = self.data
             result = _xp.min(unmasked_data)
             return self._extract_scalar_if_0d(result)
         else:
-            # Min along specific axis - use CuPy operations
-            # Create a copy of data and set masked values to NaN
-            data_copy = self.data.copy()
-            data_copy[self._mask] = _xp.nan
-            result = _xp.nanmin(data_copy, axis=axis, **kwargs)
-            # Extract scalar for NumPy compatibility when result is 0-d
+            # Min along specific axis - return a masked array
             keepdims = kwargs.get('keepdims', False)
-            if not keepdims:
-                return self._extract_scalar_if_0d(result)
-            return result
+            if self._mask is nomask:
+                result_data = _xp.min(self.data, axis=axis, **kwargs)
+                result_mask = _xp.zeros(result_data.shape, dtype=bool)
+                return _XupyMaskedArray(result_data, result_mask)
+            else:
+                data_copy = self.data.copy()
+                data_copy[self._mask] = _xp.nan
+                result_data = _xp.nanmin(data_copy, axis=axis, **kwargs)
+                result_mask = _xp.all(self._mask, axis=axis, keepdims=keepdims)
+                return _XupyMaskedArray(result_data, result_mask.astype(bool))
 
     def max(self, axis: _t.Optional[int] = None, **kwargs: dict[str, _t.Any]) -> _t.Scalar:
         """Return the maximum along a given axis.
@@ -1036,22 +1119,28 @@ class _XupyMaskedArray:
         # Use GPU operations for better performance
         if axis is None:
             # Global max
-            unmasked_data = self.data[~self._mask]
-            if unmasked_data.size == 0:
-                return _xp.nan
+            if self._mask is not nomask:
+                unmasked_data = self.data[~self._mask]
+                if unmasked_data.size == 0:
+                    # All values are masked - return masked singleton (numpy.ma behavior)
+                    return masked
+            else:
+                unmasked_data = self.data
             result = _xp.max(unmasked_data)
             return self._extract_scalar_if_0d(result)
         else:
-            # Max along specific axis - use CuPy operations
-            # Create a copy of data and set masked values to NaN
-            data_copy = self.data.copy()
-            data_copy[self._mask] = _xp.nan
-            result = _xp.nanmax(data_copy, axis=axis, **kwargs)
-            # Extract scalar for NumPy compatibility when result is 0-d
+            # Max along specific axis - return a masked array
             keepdims = kwargs.get('keepdims', False)
-            if not keepdims:
-                return self._extract_scalar_if_0d(result)
-            return result
+            if self._mask is nomask:
+                result_data = _xp.max(self.data, axis=axis, **kwargs)
+                result_mask = _xp.zeros(result_data.shape, dtype=bool)
+                return _XupyMaskedArray(result_data, result_mask)
+            else:
+                data_copy = self.data.copy()
+                data_copy[self._mask] = _xp.nan
+                result_data = _xp.nanmax(data_copy, axis=axis, **kwargs)
+                result_mask = _xp.all(self._mask, axis=axis, keepdims=keepdims)
+                return _XupyMaskedArray(result_data, result_mask.astype(bool))
 
     # --- Universal Functions Support ---
     def apply_ufunc(
@@ -1577,25 +1666,22 @@ class _XupyMaskedArray:
         Reflected element-wise addition with mask propagation.
         """
         if isinstance(other, _XupyMaskedArray):
-            # Both are _XupyMaskedArray - perform GPU operation directly
             result_data = other.data + self.data
-            result_mask = other._mask | self._mask
-            return _XupyMaskedArray(result_data, result_mask)
-        elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
-            other_data = _xp.asarray(other)
-            result_data = other_data + self.data
-            result_mask = self._mask
+            result_mask = self._combine_masks(other._mask, self._mask)
+            result_mask = self._detect_nan_inf(result_data, result_mask)
             return _XupyMaskedArray(result_data, result_mask)
         elif isinstance(other, _np.ma.masked_array):
-            # Convert numpy masked array to cupy and perform GPU operation
+            
             other_data = _xp.asarray(other.data)
             other_mask = _xp.asarray(other.mask, dtype=bool)
+            if other.mask is _np.ma.nomask:
+                other_mask = nomask
             result_data = other_data + self.data
-            result_mask = other_mask | self._mask
+            result_mask = self._combine_masks(other_mask, self._mask)
+            result_mask = self._detect_nan_inf(result_data, result_mask)
             return _XupyMaskedArray(result_data, result_mask)
         else:
-            # Scalar or other types - perform GPU operation directly
+            
             result_data = other + self.data
             result_mask = self._mask
             return _XupyMaskedArray(result_data, result_mask)
@@ -1616,19 +1702,21 @@ class _XupyMaskedArray:
         """
         if isinstance(other, _XupyMaskedArray):
             self.data += other.data
-            self._mask |= other._mask
-        elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
-            other_data = _xp.asarray(other)
-            self.data += other_data
+            self._mask = self._combine_masks(self._mask, other._mask)
         elif isinstance(other, _np.ma.masked_array):
-            # Convert numpy masked array to cupy and perform GPU operation
+            
             other_data = _xp.asarray(other.data)
             other_mask = _xp.asarray(other.mask, dtype=bool)
+            if other.mask is _np.ma.nomask:
+                other_mask = nomask
             self.data += other_data
-            self._mask |= other_mask
+            self._mask = self._combine_masks(self._mask, other_mask)
+        elif isinstance(other, _np.ndarray):
+            
+            other_data = _xp.asarray(other)
+            self.data += other_data
         else:
-            # Scalar or other types - perform GPU operation directly
+            
             self.data += other
         return self
 
@@ -1637,25 +1725,26 @@ class _XupyMaskedArray:
         Reflected element-wise subtraction with mask propagation.
         """
         if isinstance(other, _XupyMaskedArray):
-            # Both are _XupyMaskedArray - perform GPU operation directly
             result_data = other.data - self.data
-            result_mask = other._mask | self._mask
+            result_mask = self._combine_masks(other._mask, self._mask)
+            return _XupyMaskedArray(result_data, result_mask)
+        elif isinstance(other, _np.ma.masked_array):
+            
+            other_data = _xp.asarray(other.data)
+            other_mask = _xp.asarray(other.mask, dtype=bool)
+            if other.mask is _np.ma.nomask:
+                other_mask = nomask
+            result_data = other_data - self.data
+            result_mask = self._combine_masks(other_mask, self._mask)
             return _XupyMaskedArray(result_data, result_mask)
         elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
+            
             other_data = _xp.asarray(other)
             result_data = other_data - self.data
             result_mask = self._mask
             return _XupyMaskedArray(result_data, result_mask)
-        elif isinstance(other, _np.ma.masked_array):
-            # Convert numpy masked array to cupy and perform GPU operation
-            other_data = _xp.asarray(other.data)
-            other_mask = _xp.asarray(other.mask, dtype=bool)
-            result_data = other_data - self.data
-            result_mask = other_mask | self._mask
-            return _XupyMaskedArray(result_data, result_mask)
         else:
-            # Scalar or other types - perform GPU operation directly
+            
             result_data = other - self.data
             result_mask = self._mask
             return _XupyMaskedArray(result_data, result_mask)
@@ -1676,19 +1765,21 @@ class _XupyMaskedArray:
         """
         if isinstance(other, _XupyMaskedArray):
             self.data -= other.data
-            self._mask |= other._mask
-        elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
-            other_data = _xp.asarray(other)
-            self.data -= other_data
+            self._mask = self._combine_masks(self._mask, other._mask)
         elif isinstance(other, _np.ma.masked_array):
-            # Convert numpy masked array to cupy and perform GPU operation
+            
             other_data = _xp.asarray(other.data)
             other_mask = _xp.asarray(other.mask, dtype=bool)
+            if other.mask is _np.ma.nomask:
+                other_mask = nomask
             self.data -= other_data
-            self._mask |= other_mask
+            self._mask = self._combine_masks(self._mask, other_mask)
+        elif isinstance(other, _np.ndarray):
+            
+            other_data = _xp.asarray(other)
+            self.data -= other_data
         else:
-            # Scalar or other types - perform GPU operation directly
+            
             self.data -= other
         return self
 
@@ -1697,25 +1788,26 @@ class _XupyMaskedArray:
         Reflected element-wise multiplication with mask propagation.
         """
         if isinstance(other, _XupyMaskedArray):
-            # Both are _XupyMaskedArray - perform GPU operation directly
             result_data = other.data * self.data
-            result_mask = other._mask | self._mask
+            result_mask = self._combine_masks(other._mask, self._mask)
+            return _XupyMaskedArray(result_data, result_mask)
+        elif isinstance(other, _np.ma.masked_array):
+            
+            other_data = _xp.asarray(other.data)
+            other_mask = _xp.asarray(other.mask, dtype=bool)
+            if other.mask is _np.ma.nomask:
+                other_mask = nomask
+            result_data = other_data * self.data
+            result_mask = self._combine_masks(other_mask, self._mask)
             return _XupyMaskedArray(result_data, result_mask)
         elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
+            
             other_data = _xp.asarray(other)
             result_data = other_data * self.data
             result_mask = self._mask
             return _XupyMaskedArray(result_data, result_mask)
-        elif isinstance(other, _np.ma.masked_array):
-            # Convert numpy masked array to cupy and perform GPU operation
-            other_data = _xp.asarray(other.data)
-            other_mask = _xp.asarray(other.mask, dtype=bool)
-            result_data = other_data * self.data
-            result_mask = other_mask | self._mask
-            return _XupyMaskedArray(result_data, result_mask)
         else:
-            # Scalar or other types - perform GPU operation directly
+            
             result_data = other * self.data
             result_mask = self._mask
             return _XupyMaskedArray(result_data, result_mask)
@@ -1736,19 +1828,21 @@ class _XupyMaskedArray:
         """
         if isinstance(other, _XupyMaskedArray):
             self.data *= other.data
-            self._mask |= other._mask
-        elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
-            other_data = _xp.asarray(other)
-            self.data *= other_data
+            self._mask = self._combine_masks(self._mask, other._mask)
         elif isinstance(other, _np.ma.masked_array):
-            # Convert numpy masked array to cupy and perform GPU operation
+            
             other_data = _xp.asarray(other.data)
             other_mask = _xp.asarray(other.mask, dtype=bool)
+            if other.mask is _np.ma.nomask:
+                other_mask = nomask
             self.data *= other_data
-            self._mask |= other_mask
+            self._mask = self._combine_masks(self._mask, other_mask)
+        elif isinstance(other, _np.ndarray):
+            
+            other_data = _xp.asarray(other)
+            self.data *= other_data
         else:
-            # Scalar or other types - perform GPU operation directly
+            
             self.data *= other
         return self
 
@@ -1757,27 +1851,61 @@ class _XupyMaskedArray:
         Reflected element-wise true division with mask propagation.
         """
         if isinstance(other, _XupyMaskedArray):
-            # Both are _XupyMaskedArray - perform GPU operation directly
             result_data = other.data / self.data
-            result_mask = other._mask | self._mask
-            return _XupyMaskedArray(result_data, result_mask)
-        elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
-            other_data = _xp.asarray(other)
-            result_data = other_data / self.data
-            result_mask = self._mask
+            result_mask = self._combine_masks(other._mask, self._mask)
+            # Also mask where divisor (self.data) is zero
+            if _xp.issubdtype(self.data.dtype, _xp.floating):
+                if self._mask is nomask:
+                    zero_divisor = (self.data == 0)
+                else:
+                    zero_divisor = (self.data == 0) & (~self._mask)
+                # Only update mask if there are actual zeros
+                if _xp.any(zero_divisor):
+                    if result_mask is nomask:
+                        result_mask = zero_divisor
+                    else:
+                        result_mask = result_mask | zero_divisor
+            result_mask = self._detect_nan_inf(result_data, result_mask)
             return _XupyMaskedArray(result_data, result_mask)
         elif isinstance(other, _np.ma.masked_array):
-            # Convert numpy masked array to cupy and perform GPU operation
+            
             other_data = _xp.asarray(other.data)
             other_mask = _xp.asarray(other.mask, dtype=bool)
+            if other.mask is _np.ma.nomask:
+                other_mask = nomask
             result_data = other_data / self.data
-            result_mask = other_mask | self._mask
+            result_mask = self._combine_masks(other_mask, self._mask)
+            # Mask where divisor (self.data) is zero
+            if _xp.issubdtype(self.data.dtype, _xp.floating):
+                if self._mask is nomask:
+                    zero_divisor = (self.data == 0)
+                else:
+                    zero_divisor = (self.data == 0) & (~self._mask)
+                # Only update mask if there are actual zeros
+                if _xp.any(zero_divisor):
+                    if result_mask is nomask:
+                        result_mask = zero_divisor
+                    else:
+                        result_mask = result_mask | zero_divisor
+            result_mask = self._detect_nan_inf(result_data, result_mask)
             return _XupyMaskedArray(result_data, result_mask)
         else:
-            # Scalar or other types - perform GPU operation directly
+            
             result_data = other / self.data
             result_mask = self._mask
+            # Mask where divisor (self.data) is zero (unless already masked)
+            if not (isinstance(other, (int, float, complex)) and other == 0):
+                # Check for division by zero (only for non-zero numerators)
+                if _xp.issubdtype(self.data.dtype, _xp.floating) or isinstance(other, (float, complex)):
+                    zero_divisor = (self.data == 0)
+                    if self._mask is not nomask:
+                        # Only mask where divisor is zero AND not already masked
+                        zero_divisor = zero_divisor & (~self._mask)
+                    if result_mask is nomask:
+                        result_mask = zero_divisor
+                    else:
+                        result_mask = result_mask | zero_divisor
+            result_mask = self._detect_nan_inf(result_data, result_mask)
             return _XupyMaskedArray(result_data, result_mask)
 
     def __itruediv__(self, other: object) -> "_XupyMaskedArray":
@@ -1796,19 +1924,51 @@ class _XupyMaskedArray:
         """
         if isinstance(other, _XupyMaskedArray):
             self.data /= other.data
-            self._mask |= other._mask
-        elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
-            other_data = _xp.asarray(other)
-            self.data /= other_data
+            self._mask = self._combine_masks(self._mask, other._mask)
+            # Also mask where divisor is zero (division by zero)
+            if _xp.issubdtype(other.data.dtype, _xp.floating):
+                if other._mask is nomask:
+                    zero_divisor = (other.data == 0)
+                else:
+                    zero_divisor = (other.data == 0) & (~other._mask)
+                if self._mask is nomask:
+                    self._mask = zero_divisor
+                else:
+                    self._mask = self._mask | zero_divisor
+            self._mask = self._detect_nan_inf(self.data, self._mask)
         elif isinstance(other, _np.ma.masked_array):
-            # Convert numpy masked array to cupy and perform GPU operation
+            
             other_data = _xp.asarray(other.data)
             other_mask = _xp.asarray(other.mask, dtype=bool)
+            if other.mask is _np.ma.nomask:
+                other_mask = nomask
             self.data /= other_data
-            self._mask |= other_mask
+            self._mask = self._combine_masks(self._mask, other_mask)
+            # Mask where divisor is zero
+            if _xp.issubdtype(other_data.dtype, _xp.floating):
+                if other_mask is nomask:
+                    zero_divisor = (other_data == 0)
+                else:
+                    zero_divisor = (other_data == 0) & (~other_mask)
+                if self._mask is nomask:
+                    self._mask = zero_divisor
+                else:
+                    self._mask = self._mask | zero_divisor
+            self._mask = self._detect_nan_inf(self.data, self._mask)
+        elif isinstance(other, _np.ndarray):
+            
+            other_data = _xp.asarray(other)
+            self.data /= other_data
+            # Mask where divisor is zero
+            if _xp.issubdtype(other_data.dtype, _xp.floating):
+                zero_divisor = (other_data == 0)
+                if self._mask is nomask:
+                    self._mask = zero_divisor
+                else:
+                    self._mask = self._mask | zero_divisor
+            self._mask = self._detect_nan_inf(self.data, self._mask)
         else:
-            # Scalar or other types - perform GPU operation directly
+            
             self.data /= other
         return self
 
@@ -1817,25 +1977,24 @@ class _XupyMaskedArray:
         Reflected element-wise floor division with mask propagation.
         """
         if isinstance(other, _XupyMaskedArray):
-            # Both are _XupyMaskedArray - perform GPU operation directly
             result_data = other.data // self.data
             result_mask = other._mask | self._mask
             return _XupyMaskedArray(result_data, result_mask)
-        elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
-            other_data = _xp.asarray(other)
-            result_data = other_data // self.data
-            result_mask = self._mask
-            return _XupyMaskedArray(result_data, result_mask)
         elif isinstance(other, _np.ma.masked_array):
-            # Convert numpy masked array to cupy and perform GPU operation
+            
             other_data = _xp.asarray(other.data)
             other_mask = _xp.asarray(other.mask, dtype=bool)
             result_data = other_data // self.data
             result_mask = other_mask | self._mask
             return _XupyMaskedArray(result_data, result_mask)
+        elif isinstance(other, _np.ndarray):
+            
+            other_data = _xp.asarray(other)
+            result_data = other_data // self.data
+            result_mask = self._mask
+            return _XupyMaskedArray(result_data, result_mask)
         else:
-            # Scalar or other types - perform GPU operation directly
+            
             result_data = other // self.data
             result_mask = self._mask
             return _XupyMaskedArray(result_data, result_mask)
@@ -1857,18 +2016,18 @@ class _XupyMaskedArray:
         if isinstance(other, _XupyMaskedArray):
             self.data //= other.data
             self._mask |= other._mask
-        elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
-            other_data = _xp.asarray(other)
-            self.data //= other_data
         elif isinstance(other, _np.ma.masked_array):
-            # Convert numpy masked array to cupy and perform GPU operation
+            
             other_data = _xp.asarray(other.data)
             other_mask = _xp.asarray(other.mask, dtype=bool)
             self.data //= other_data
             self._mask |= other_mask
+        elif isinstance(other, _np.ndarray):
+            
+            other_data = _xp.asarray(other)
+            self.data //= other_data
         else:
-            # Scalar or other types - perform GPU operation directly
+            
             self.data //= other
         return self
 
@@ -1877,25 +2036,24 @@ class _XupyMaskedArray:
         Reflected element-wise modulo operation with mask propagation.
         """
         if isinstance(other, _XupyMaskedArray):
-            # Both are _XupyMaskedArray - perform GPU operation directly
             result_data = other.data % self.data
             result_mask = other._mask | self._mask
             return _XupyMaskedArray(result_data, result_mask)
-        elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
-            other_data = _xp.asarray(other)
-            result_data = other_data % self.data
-            result_mask = self._mask
-            return _XupyMaskedArray(result_data, result_mask)
         elif isinstance(other, _np.ma.masked_array):
-            # Convert numpy masked array to cupy and perform GPU operation
+            
             other_data = _xp.asarray(other.data)
             other_mask = _xp.asarray(other.mask, dtype=bool)
             result_data = other_data % self.data
             result_mask = other_mask | self._mask
             return _XupyMaskedArray(result_data, result_mask)
+        elif isinstance(other, _np.ndarray):
+            
+            other_data = _xp.asarray(other)
+            result_data = other_data % self.data
+            result_mask = self._mask
+            return _XupyMaskedArray(result_data, result_mask)
         else:
-            # Scalar or other types - perform GPU operation directly
+            
             result_data = other % self.data
             result_mask = self._mask
             return _XupyMaskedArray(result_data, result_mask)
@@ -1917,18 +2075,18 @@ class _XupyMaskedArray:
         if isinstance(other, _XupyMaskedArray):
             self.data %= other.data
             self._mask |= other._mask
-        elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
-            other_data = _xp.asarray(other)
-            self.data %= other_data
         elif isinstance(other, _np.ma.masked_array):
-            # Convert numpy masked array to cupy and perform GPU operation
+            
             other_data = _xp.asarray(other.data)
             other_mask = _xp.asarray(other.mask, dtype=bool)
             self.data %= other_data
             self._mask |= other_mask
+        elif isinstance(other, _np.ndarray):
+            
+            other_data = _xp.asarray(other)
+            self.data %= other_data
         else:
-            # Scalar or other types - perform GPU operation directly
+            
             self.data %= other
         return self
 
@@ -1937,25 +2095,24 @@ class _XupyMaskedArray:
         Reflected element-wise exponentiation with mask propagation.
         """
         if isinstance(other, _XupyMaskedArray):
-            # Both are _XupyMaskedArray - perform GPU operation directly
             result_data = other.data ** self.data
             result_mask = other._mask | self._mask
             return _XupyMaskedArray(result_data, result_mask)
-        elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
-            other_data = _xp.asarray(other)
-            result_data = other_data ** self.data
-            result_mask = self._mask
-            return _XupyMaskedArray(result_data, result_mask)
         elif isinstance(other, _np.ma.masked_array):
-            # Convert numpy masked array to cupy and perform GPU operation
+            
             other_data = _xp.asarray(other.data)
             other_mask = _xp.asarray(other.mask, dtype=bool)
             result_data = other_data ** self.data
             result_mask = other_mask | self._mask
             return _XupyMaskedArray(result_data, result_mask)
+        elif isinstance(other, _np.ndarray):
+            
+            other_data = _xp.asarray(other)
+            result_data = other_data ** self.data
+            result_mask = self._mask
+            return _XupyMaskedArray(result_data, result_mask)
         else:
-            # Scalar or other types - perform GPU operation directly
+            
             result_data = other ** self.data
             result_mask = self._mask
             return _XupyMaskedArray(result_data, result_mask)
@@ -1977,18 +2134,18 @@ class _XupyMaskedArray:
         if isinstance(other, _XupyMaskedArray):
             self.data **= other.data
             self._mask |= other._mask
-        elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
-            other_data = _xp.asarray(other)
-            self.data **= other_data
         elif isinstance(other, _np.ma.masked_array):
-            # Convert numpy masked array to cupy and perform GPU operation
+            
             other_data = _xp.asarray(other.data)
             other_mask = _xp.asarray(other.mask, dtype=bool)
             self.data **= other_data
             self._mask |= other_mask
+        elif isinstance(other, _np.ndarray):
+            
+            other_data = _xp.asarray(other)
+            self.data **= other_data
         else:
-            # Scalar or other types - perform GPU operation directly
+            
             self.data **= other
         return self
 
@@ -2009,17 +2166,18 @@ class _XupyMaskedArray:
         """
         if isinstance(other, _XupyMaskedArray):
             result_data = self.data @ other.data
-            result_mask = self._mask | other._mask
-        elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
-            other_data = _xp.asarray(other)
-            result_data = self.data @ other_data
-            result_mask = self._mask
+            result_mask = self._combine_masks(self._mask, other._mask)
         elif isinstance(other, _np.ma.masked_array):
             other_data = _xp.asarray(other.data, dtype=self.dtype)
             other_mask = _xp.asarray(other.mask, dtype=bool)
+            if other.mask is _np.ma.nomask:
+                other_mask = nomask
             result_data = self.data @ other_data
-            result_mask = self._mask | other_mask
+            result_mask = self._combine_masks(self._mask, other_mask)
+        elif isinstance(other, _np.ndarray):
+            other_data = _xp.asarray(other)
+            result_data = self.data @ other_data
+            result_mask = self._mask
         else:
             result_data = self.data @ other
             result_mask = self._mask
@@ -2030,25 +2188,27 @@ class _XupyMaskedArray:
         Reflected matrix multiplication with mask propagation.
         """
         if isinstance(other, _XupyMaskedArray):
-            # Both are _XupyMaskedArray - perform GPU operation directly
             result_data = other.data @ self.data
-            result_mask = other._mask | self._mask
+            result_mask = self._combine_masks(other._mask, self._mask)
             return _XupyMaskedArray(result_data, result_mask)
+        
+        elif isinstance(other, _np.ma.masked_array):
+            other_data = _xp.asarray(other.data)
+            other_mask = _xp.asarray(other.mask, dtype=bool)
+            if other.mask is _np.ma.nomask:
+                other_mask = nomask
+            result_data = other_data @ self.data
+            result_mask = self._combine_masks(other_mask, self._mask)
+            return _XupyMaskedArray(result_data, result_mask)
+        
         elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
             other_data = _xp.asarray(other)
             result_data = other_data @ self.data
             result_mask = self._mask
             return _XupyMaskedArray(result_data, result_mask)
-        elif isinstance(other, _np.ma.masked_array):
-            # Convert numpy masked array to cupy and perform GPU operation
-            other_data = _xp.asarray(other.data)
-            other_mask = _xp.asarray(other.mask, dtype=bool)
-            result_data = other_data @ self.data
-            result_mask = other_mask | self._mask
-            return _XupyMaskedArray(result_data, result_mask)
+        
         else:
-            # Scalar or other types - perform GPU operation directly
+            
             result_data = other @ self.data
             result_mask = self._mask
             return _XupyMaskedArray(result_data, result_mask)
@@ -2070,15 +2230,15 @@ class _XupyMaskedArray:
         if isinstance(other, _XupyMaskedArray):
             self.data = self.data @ other.data
             self._mask = self._mask | other._mask
-        elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
-            other_data = _xp.asarray(other)
-            self.data = self.data @ other_data
         elif isinstance(other, _np.ma.masked_array):
             other_data = _xp.asarray(other.data, dtype=self.dtype)
             other_mask = _xp.asarray(other.mask, dtype=bool)
             self.data = self.data @ other_data
             self._mask = self._mask | other_mask
+        elif isinstance(other, _np.ndarray):
+            
+            other_data = _xp.asarray(other)
+            self.data = self.data @ other_data
         else:
             self.data = self.data @ other
             # mask unchanged
@@ -2107,278 +2267,418 @@ class _XupyMaskedArray:
         return _XupyMaskedArray(result, self._mask)
 
     # --- Comparison Operators (optional for mask logic) ---
-    def __eq__(self, other: object) -> _xp.ndarray:
+    def __eq__(self, other: object) -> "_XupyMaskedArray":
         """
-        Element-wise equality comparison.
+        Element-wise equality comparison with mask propagation.
 
         Returns
         -------
-        xp.ndarray
-            Boolean array with the result of the comparison.
+        _XupyMaskedArray
+            Masked array with boolean comparison results. Masked elements in either
+            operand result in masked elements in the output.
         """
         if isinstance(other, _XupyMaskedArray):
-            return self.data == other.data
-        return self.data == other
+            result_data = self.data == other.data
+            result_mask = self._combine_masks(self._mask, other._mask)
+        elif isinstance(other, _np.ma.masked_array):
+            other_data = _xp.asarray(other.data)
+            other_mask = _xp.asarray(other.mask, dtype=bool)
+            if other.mask is _np.ma.nomask:
+                other_mask = nomask
+            result_data = self.data == other_data
+            result_mask = self._combine_masks(self._mask, other_mask)
+        else:
+            result_data = self.data == other
+            result_mask = self._mask
+        return _XupyMaskedArray(result_data, result_mask)
 
-    def __ne__(self, other: object) -> _xp.ndarray:
+    def __ne__(self, other: object) -> "_XupyMaskedArray":
         """
-        Element-wise inequality comparison.
+        Element-wise inequality comparison with mask propagation.
 
         Returns
         -------
-        xp.ndarray
-            Boolean array with the result of the comparison.
+        _XupyMaskedArray
+            Masked array with boolean comparison results. Masked elements in either
+            operand result in masked elements in the output.
         """
         if isinstance(other, _XupyMaskedArray):
-            return self.data != other.data
-        return self.data != other
+            result_data = self.data != other.data
+            result_mask = self._combine_masks(self._mask, other._mask)
+        elif isinstance(other, _np.ma.masked_array):
+            other_data = _xp.asarray(other.data)
+            other_mask = _xp.asarray(other.mask, dtype=bool)
+            if other.mask is _np.ma.nomask:
+                other_mask = nomask
+            result_data = self.data != other_data
+            result_mask = self._combine_masks(self._mask, other_mask)
+        else:
+            result_data = self.data != other
+            result_mask = self._mask
+        return _XupyMaskedArray(result_data, result_mask)
 
-    def __lt__(self, other: object) -> _xp.ndarray:
+    def __lt__(self, other: object) -> "_XupyMaskedArray":
         """
-        Element-wise less-than comparison.
+        Element-wise less-than comparison with mask propagation.
 
         Returns
         -------
-        xp.ndarray
-            Boolean array with the result of the comparison.
+        _XupyMaskedArray
+            Masked array with boolean comparison results. Masked elements in either
+            operand result in masked elements in the output.
         """
         if isinstance(other, _XupyMaskedArray):
-            return self.data < other.data
-        return self.data < other
+            result_data = self.data < other.data
+            result_mask = self._combine_masks(self._mask, other._mask)
+        elif isinstance(other, _np.ma.masked_array):
+            other_data = _xp.asarray(other.data)
+            other_mask = _xp.asarray(other.mask, dtype=bool)
+            if other.mask is _np.ma.nomask:
+                other_mask = nomask
+            result_data = self.data < other_data
+            result_mask = self._combine_masks(self._mask, other_mask)
+        else:
+            result_data = self.data < other
+            result_mask = self._mask
+        return _XupyMaskedArray(result_data, result_mask)
 
-    def __le__(self, other: object) -> _xp.ndarray:
+    def __le__(self, other: object) -> "_XupyMaskedArray":
         """
-        Element-wise less-than-or-equal comparison.
+        Element-wise less-than-or-equal comparison with mask propagation.
 
         Returns
         -------
-        xp.ndarray
-            Boolean array with the result of the comparison.
+        _XupyMaskedArray
+            Masked array with boolean comparison results. Masked elements in either
+            operand result in masked elements in the output.
         """
         if isinstance(other, _XupyMaskedArray):
-            return self.data <= other.data
-        return self.data <= other
+            result_data = self.data <= other.data
+            result_mask = self._combine_masks(self._mask, other._mask)
+        elif isinstance(other, _np.ma.masked_array):
+            other_data = _xp.asarray(other.data)
+            other_mask = _xp.asarray(other.mask, dtype=bool)
+            if other.mask is _np.ma.nomask:
+                other_mask = nomask
+            result_data = self.data <= other_data
+            result_mask = self._combine_masks(self._mask, other_mask)
+        else:
+            result_data = self.data <= other
+            result_mask = self._mask
+        return _XupyMaskedArray(result_data, result_mask)
 
-    def __gt__(self, other: object) -> _xp.ndarray:
+    def __gt__(self, other: object) -> "_XupyMaskedArray":
         """
-        Element-wise greater-than comparison.
+        Element-wise greater-than comparison with mask propagation.
 
         Returns
         -------
-        xp.ndarray
-            Boolean array with the result of the comparison.
+        _XupyMaskedArray
+            Masked array with boolean comparison results. Masked elements in either
+            operand result in masked elements in the output.
         """
         if isinstance(other, _XupyMaskedArray):
-            return self.data > other.data
-        return self.data > other
+            result_data = self.data > other.data
+            result_mask = self._combine_masks(self._mask, other._mask)
+        elif isinstance(other, _np.ma.masked_array):
+            other_data = _xp.asarray(other.data)
+            other_mask = _xp.asarray(other.mask, dtype=bool)
+            if other.mask is _np.ma.nomask:
+                other_mask = nomask
+            result_data = self.data > other_data
+            result_mask = self._combine_masks(self._mask, other_mask)
+        else:
+            result_data = self.data > other
+            result_mask = self._mask
+        return _XupyMaskedArray(result_data, result_mask)
 
-    def __ge__(self, other: object) -> _xp.ndarray:
+    def __ge__(self, other: object) -> "_XupyMaskedArray":
         """
-        Element-wise greater-than-or-equal comparison.
+        Element-wise greater-than-or-equal comparison with mask propagation.
 
         Returns
         -------
-        xp.ndarray
-            Boolean array with the result of the comparison.
+        _XupyMaskedArray
+            Masked array with boolean comparison results. Masked elements in either
+            operand result in masked elements in the output.
         """
         if isinstance(other, _XupyMaskedArray):
-            return self.data >= other.data
-        return self.data >= other
+            result_data = self.data >= other.data
+            result_mask = self._combine_masks(self._mask, other._mask)
+        elif isinstance(other, _np.ma.masked_array):
+            other_data = _xp.asarray(other.data)
+            other_mask = _xp.asarray(other.mask, dtype=bool)
+            if other.mask is _np.ma.nomask:
+                other_mask = nomask
+            result_data = self.data >= other_data
+            result_mask = self._combine_masks(self._mask, other_mask)
+        else:
+            result_data = self.data >= other
+            result_mask = self._mask
+        return _XupyMaskedArray(result_data, result_mask)
 
     def __mul__(self, other: object):
         """
-        Element-wise multiplication with mask propagation.
+        Element-wise multiplication with mask propagation and NaN detection.
         """
         if isinstance(other, _XupyMaskedArray):
-            # Both are _XupyMaskedArray - perform GPU operation directly
             result_data = self.data * other.data
-            result_mask = self._mask | other._mask
-            return _XupyMaskedArray(result_data, result_mask)
-        elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
-            other_data = _xp.asarray(other)
-            result_data = self.data * other_data
-            result_mask = self._mask
+            result_mask = self._combine_masks(self._mask, other._mask)
+            result_mask = self._detect_nan_inf(result_data, result_mask)
             return _XupyMaskedArray(result_data, result_mask)
         elif isinstance(other, _np.ma.masked_array):
-            # Convert numpy masked array to cupy and perform GPU operation
+            
             other_data = _xp.asarray(other.data)
             other_mask = _xp.asarray(other.mask, dtype=bool)
+            if other.mask is _np.ma.nomask:
+                other_mask = nomask
             result_data = self.data * other_data
-            result_mask = self._mask | other_mask
+            result_mask = self._combine_masks(self._mask, other_mask)
+            result_mask = self._detect_nan_inf(result_data, result_mask)
+            return _XupyMaskedArray(result_data, result_mask)
+        elif isinstance(other, _np.ndarray):
+            
+            other_data = _xp.asarray(other)
+            result_data = self.data * other_data
+            result_mask = self._detect_nan_inf(result_data, self._mask)
             return _XupyMaskedArray(result_data, result_mask)
         else:
-            # Scalar or other types - perform GPU operation directly
+            
             result_data = self.data * other
-            result_mask = self._mask
+            result_mask = self._detect_nan_inf(result_data, self._mask)
             return _XupyMaskedArray(result_data, result_mask)
 
     def __truediv__(self, other: object):
         """
-        Element-wise true division with mask propagation.
+        Element-wise true division with mask propagation and NaN detection.
         """
         if isinstance(other, _XupyMaskedArray):
-            # Both are _XupyMaskedArray - perform GPU operation directly
             result_data = self.data / other.data
-            result_mask = self._mask | other._mask
+            result_mask = self._combine_masks(self._mask, other._mask)
+            # Also mask where divisor is zero (division by zero)
+            if _xp.issubdtype(other.data.dtype, _xp.floating):
+                if other._mask is nomask:
+                    zero_divisor = (other.data == 0)
+                else:
+                    zero_divisor = (other.data == 0) & (~other._mask)
+                # Only update mask if there are actual zeros
+                if _xp.any(zero_divisor):
+                    if result_mask is nomask:
+                        result_mask = zero_divisor
+                    else:
+                        result_mask = result_mask | zero_divisor
+            result_mask = self._detect_nan_inf(result_data, result_mask)
+            return _XupyMaskedArray(result_data, result_mask)
+        elif isinstance(other, _np.ma.masked_array):
+            
+            other_data = _xp.asarray(other.data)
+            other_mask = _xp.asarray(other.mask, dtype=bool)
+            if other.mask is _np.ma.nomask:
+                other_mask = nomask
+            result_data = self.data / other_data
+            result_mask = self._combine_masks(self._mask, other_mask)
+            # Mask where divisor is zero
+            if _xp.issubdtype(other_data.dtype, _xp.floating):
+                if other_mask is nomask:
+                    zero_divisor = (other_data == 0)
+                else:
+                    zero_divisor = (other_data == 0) & (~other_mask)
+                # Only update mask if there are actual zeros
+                if _xp.any(zero_divisor):
+                    if result_mask is nomask:
+                        result_mask = zero_divisor
+                    else:
+                        result_mask = result_mask | zero_divisor
+            result_mask = self._detect_nan_inf(result_data, result_mask)
             return _XupyMaskedArray(result_data, result_mask)
         elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
+            
             other_data = _xp.asarray(other)
             result_data = self.data / other_data
             result_mask = self._mask
-            return _XupyMaskedArray(result_data, result_mask)
-        elif isinstance(other, _np.ma.masked_array):
-            # Convert numpy masked array to cupy and perform GPU operation
-            other_data = _xp.asarray(other.data)
-            other_mask = _xp.asarray(other.mask, dtype=bool)
-            result_data = self.data / other_data
-            result_mask = self._mask | other_mask
+            # Mask where divisor is zero
+            if _xp.issubdtype(other_data.dtype, _xp.floating):
+                zero_divisor = (other_data == 0)
+                result_mask = result_mask | zero_divisor if result_mask is not nomask else zero_divisor
+            result_mask = self._detect_nan_inf(result_data, result_mask)
             return _XupyMaskedArray(result_data, result_mask)
         else:
-            # Scalar or other types - perform GPU operation directly
+            
             result_data = self.data / other
             result_mask = self._mask
+            # Mask where divisor is zero (for scalar)
+            if other == 0:
+                if result_mask is nomask:
+                    result_mask = _xp.ones(self.data.shape, dtype=bool)
+                else:
+                    # Mask all elements when dividing by zero
+                    result_mask = _xp.ones(self.data.shape, dtype=bool) | result_mask
+            # Only call _detect_nan_inf if we have floating point or if result_mask is not nomask
+            # (to avoid creating unnecessary mask arrays)
+            if result_mask is not nomask or _xp.issubdtype(result_data.dtype, _xp.floating):
+                result_mask = self._detect_nan_inf(result_data, result_mask)
             return _XupyMaskedArray(result_data, result_mask)
 
     def __add__(self, other: object) -> "_XupyMaskedArray":
         """
-        Element-wise addition with mask propagation.
+        Element-wise addition with mask propagation and NaN detection.
         """
         if isinstance(other, _XupyMaskedArray):
-            # Both are _XupyMaskedArray - perform GPU operation directly
             result_data = self.data + other.data
-            result_mask = self._mask | other._mask
-            return _XupyMaskedArray(result_data, result_mask)
+            result_mask = self._combine_masks(self._mask, other._mask)
+            result_mask = self._detect_nan_inf(result_data, result_mask)
+            return _XupyMaskedArray(result_data, mask=result_mask)
+        elif isinstance(other, _np.ma.masked_array):
+            
+            other_data = _xp.asarray(other.data)
+            # Check for nomask BEFORE converting to array
+            if other.mask is _np.ma.nomask:
+                other_mask = nomask
+            else:
+                # Convert mask to CuPy array
+                other_mask = _xp.asarray(other.mask, dtype=bool)
+                # Ensure mask has the right shape (numpy.ma might have scalar masks)
+                if other_mask.ndim == 0:
+                    # Scalar mask - broadcast to data shape
+                    other_mask = _xp.full(other_data.shape, bool(other_mask), dtype=bool)
+            result_data = self.data + other_data
+            result_mask = self._combine_masks(self._mask, other_mask)
+            result_mask = self._detect_nan_inf(result_data, result_mask)
+            return _XupyMaskedArray(result_data, mask=result_mask)
         elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
+            
             other_data = _xp.asarray(other)
             result_data = self.data + other_data
-            result_mask = self._mask
-            return _XupyMaskedArray(result_data, result_mask)
-        elif isinstance(other, _np.ma.masked_array):
-            # Convert numpy masked array to cupy and perform GPU operation
-            other_data = _xp.asarray(other.data)
-            other_mask = _xp.asarray(other.mask, dtype=bool)
-            result_data = self.data + other_data
-            result_mask = self._mask | other_mask
-            return _XupyMaskedArray(result_data, result_mask)
+            result_mask = self._detect_nan_inf(result_data, self._mask)
+            return _XupyMaskedArray(result_data, mask=result_mask)
         else:
-            # Scalar or other types - perform GPU operation directly
+            
             result_data = self.data + other
-            result_mask = self._mask
-            return _XupyMaskedArray(result_data, result_mask)
+            result_mask = self._detect_nan_inf(result_data, self._mask)
+            return _XupyMaskedArray(result_data, mask=result_mask)
 
     def __sub__(self, other: object) -> "_XupyMaskedArray":
         """
-        Element-wise subtraction with mask propagation.
+        Element-wise subtraction with mask propagation and NaN detection.
         """
         if isinstance(other, _XupyMaskedArray):
-            # Both are _XupyMaskedArray - perform GPU operation directly
             result_data = self.data - other.data
-            result_mask = self._mask | other._mask
-            return _XupyMaskedArray(result_data, result_mask)
-        elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
-            other_data = _xp.asarray(other)
-            result_data = self.data - other_data
-            result_mask = self._mask
-            return _XupyMaskedArray(result_data, result_mask)
+            result_mask = self._combine_masks(self._mask, other._mask)
+            result_mask = self._detect_nan_inf(result_data, result_mask)
+            return _XupyMaskedArray(result_data, mask=result_mask)
         elif isinstance(other, _np.ma.masked_array):
-            # Convert numpy masked array to cupy and perform GPU operation
+            
             other_data = _xp.asarray(other.data)
             other_mask = _xp.asarray(other.mask, dtype=bool)
+            if other.mask is _np.ma.nomask:
+                other_mask = nomask
             result_data = self.data - other_data
-            result_mask = self._mask | other_mask
-            return _XupyMaskedArray(result_data, result_mask)
+            result_mask = self._combine_masks(self._mask, other_mask)
+            result_mask = self._detect_nan_inf(result_data, result_mask)
+            return _XupyMaskedArray(result_data, mask=result_mask)
+        elif isinstance(other, _np.ndarray):
+            
+            other_data = _xp.asarray(other)
+            result_data = self.data - other_data
+            result_mask = self._detect_nan_inf(result_data, self._mask)
+            return _XupyMaskedArray(result_data, mask=result_mask)
         else:
-            # Scalar or other types - perform GPU operation directly
+            
             result_data = self.data - other
-            result_mask = self._mask
-            return _XupyMaskedArray(result_data, result_mask)
+            result_mask = self._detect_nan_inf(result_data, self._mask)
+            return _XupyMaskedArray(result_data, mask=result_mask)
 
     def __pow__(self, other: object) -> "_XupyMaskedArray":
         """
-        Element-wise exponentiation with mask propagation.
+        Element-wise exponentiation with mask propagation and NaN detection.
         """
         if isinstance(other, _XupyMaskedArray):
-            # Both are _XupyMaskedArray - perform GPU operation directly
             result_data = self.data ** other.data
-            result_mask = self._mask | other._mask
-            return _XupyMaskedArray(result_data, result_mask)
-        elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
-            other_data = _xp.asarray(other)
-            result_data = self.data ** other_data
-            result_mask = self._mask
+            result_mask = self._combine_masks(self._mask, other._mask)
+            result_mask = self._detect_nan_inf(result_data, result_mask)
             return _XupyMaskedArray(result_data, result_mask)
         elif isinstance(other, _np.ma.masked_array):
-            # Convert numpy masked array to cupy and perform GPU operation
+            
             other_data = _xp.asarray(other.data)
             other_mask = _xp.asarray(other.mask, dtype=bool)
+            if other.mask is _np.ma.nomask:
+                other_mask = nomask
             result_data = self.data ** other_data
-            result_mask = self._mask | other_mask
+            result_mask = self._combine_masks(self._mask, other_mask)
+            result_mask = self._detect_nan_inf(result_data, result_mask)
+            return _XupyMaskedArray(result_data, result_mask)
+        elif isinstance(other, _np.ndarray):
+            
+            other_data = _xp.asarray(other)
+            result_data = self.data ** other_data
+            result_mask = self._detect_nan_inf(result_data, self._mask)
             return _XupyMaskedArray(result_data, result_mask)
         else:
-            # Scalar or other types - perform GPU operation directly
+            
             result_data = self.data ** other
-            result_mask = self._mask
+            result_mask = self._detect_nan_inf(result_data, self._mask)
             return _XupyMaskedArray(result_data, result_mask)
 
     def __floordiv__(self, other: object) -> "_XupyMaskedArray":
         """
-        Element-wise floor division with mask propagation.
+        Element-wise floor division with mask propagation and NaN detection.
         """
         if isinstance(other, _XupyMaskedArray):
-            # Both are _XupyMaskedArray - perform GPU operation directly
             result_data = self.data // other.data
-            result_mask = self._mask | other._mask
-            return _XupyMaskedArray(result_data, result_mask)
-        elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
-            other_data = _xp.asarray(other)
-            result_data = self.data // other_data
-            result_mask = self._mask
+            result_mask = self._combine_masks(self._mask, other._mask)
+            result_mask = self._detect_nan_inf(result_data, result_mask)
             return _XupyMaskedArray(result_data, result_mask)
         elif isinstance(other, _np.ma.masked_array):
-            # Convert numpy masked array to cupy and perform GPU operation
+            
             other_data = _xp.asarray(other.data)
             other_mask = _xp.asarray(other.mask, dtype=bool)
+            if other.mask is _np.ma.nomask:
+                other_mask = nomask
             result_data = self.data // other_data
-            result_mask = self._mask | other_mask
+            result_mask = self._combine_masks(self._mask, other_mask)
+            result_mask = self._detect_nan_inf(result_data, result_mask)
+            return _XupyMaskedArray(result_data, result_mask)
+        elif isinstance(other, _np.ndarray):
+            
+            other_data = _xp.asarray(other)
+            result_data = self.data // other_data
+            result_mask = self._detect_nan_inf(result_data, self._mask)
             return _XupyMaskedArray(result_data, result_mask)
         else:
-            # Scalar or other types - perform GPU operation directly
+            
             result_data = self.data // other
-            result_mask = self._mask
+            result_mask = self._detect_nan_inf(result_data, self._mask)
             return _XupyMaskedArray(result_data, result_mask)
 
     def __mod__(self, other: object) -> "_XupyMaskedArray":
         """
-        Element-wise modulo operation with mask propagation.
+        Element-wise modulo operation with mask propagation and NaN detection.
         """
         if isinstance(other, _XupyMaskedArray):
-            # Both are _XupyMaskedArray - perform GPU operation directly
             result_data = self.data % other.data
-            result_mask = self._mask | other._mask
-            return _XupyMaskedArray(result_data, result_mask)
-        elif isinstance(other, _np.ndarray):
-            # Convert numpy array to cupy and perform GPU operation
-            other_data = _xp.asarray(other)
-            result_data = self.data % other_data
-            result_mask = self._mask
+            result_mask = self._combine_masks(self._mask, other._mask)
+            result_mask = self._detect_nan_inf(result_data, result_mask)
             return _XupyMaskedArray(result_data, result_mask)
         elif isinstance(other, _np.ma.masked_array):
-            # Convert numpy masked array to cupy and perform GPU operation
+            
             other_data = _xp.asarray(other.data)
             other_mask = _xp.asarray(other.mask, dtype=bool)
+            if other.mask is _np.ma.nomask:
+                other_mask = nomask
             result_data = self.data % other_data
-            result_mask = self._mask | other_mask
+            result_mask = self._combine_masks(self._mask, other_mask)
+            result_mask = self._detect_nan_inf(result_data, result_mask)
+            return _XupyMaskedArray(result_data, result_mask)
+        elif isinstance(other, _np.ndarray):
+            
+            other_data = _xp.asarray(other)
+            result_data = self.data % other_data
+            result_mask = self._detect_nan_inf(result_data, self._mask)
             return _XupyMaskedArray(result_data, result_mask)
         else:
-            # Scalar or other types - perform GPU operation directly
+            
             result_data = self.data % other
-            result_mask = self._mask
+            result_mask = self._detect_nan_inf(result_data, self._mask)
             return _XupyMaskedArray(result_data, result_mask)
 
     def __len__(self) -> int:
@@ -2451,8 +2751,52 @@ class _XupyMaskedArray:
         value : scalar or array-like
             The value to set.
         """
-        if self._is_hard_mask:
-            raise ValueError("Cannot assign to masked array with hard mask")
+        # Handle hard mask: prevent unmasking of already masked elements
+        if self._is_hard_mask and self._mask is not nomask:
+            # Check if we're trying to unmask any elements
+            if value is not masked:
+                # Get the mask slice to check
+                try:
+                    mask_slice = self._mask[key]
+                    if isinstance(mask_slice, _xp.ndarray):
+                        # Check if any of the target positions are masked
+                        if _xp.any(mask_slice):
+                            # Some elements are masked - check if we're trying to unmask them
+                            if isinstance(value, _XupyMaskedArray):
+                                # If value has unmasked elements where we have masked, prevent it
+                                if value._mask is not nomask:
+                                    # Check if value would unmask any currently masked positions
+                                    would_unmask = mask_slice & (~value._mask)
+                                else:
+                                    # Value has no mask, so it would unmask all masked positions
+                                    would_unmask = mask_slice
+                            else:
+                                # Regular value assignment would unmask all masked positions
+                                would_unmask = mask_slice
+                            
+                            if _xp.any(would_unmask):
+                                raise ValueError(
+                                    "Cannot unmask elements in a hard mask. "
+                                    "Use soften_mask() first or assign masked values."
+                                )
+                    elif mask_slice:
+                        # Single masked element - check if value would unmask it
+                        if isinstance(value, _XupyMaskedArray):
+                            if value._mask is nomask or not _xp.any(value._mask):
+                                # Value is not masked, would unmask
+                                raise ValueError(
+                                    "Cannot unmask elements in a hard mask. "
+                                    "Use soften_mask() first or assign masked values."
+                                )
+                        else:
+                            # Regular value would unmask
+                            raise ValueError(
+                                "Cannot unmask elements in a hard mask. "
+                                "Use soften_mask() first or assign masked values."
+                            )
+                except (IndexError, KeyError):
+                    # Invalid key - let it fail naturally
+                    pass
         
         # Handle different types of values
         if isinstance(value, _XupyMaskedArray):
@@ -2477,9 +2821,52 @@ class _XupyMaskedArray:
         else:
             # Regular assignment
             self.data[key] = value
-            # Unmask the assigned positions
+            # Unmask the assigned positions (only if not hard mask or not already masked)
             if self._mask is not nomask:
-                self._mask[key] = False
+                if self._is_hard_mask:
+                    # In hard mask, only unmask if not already masked
+                    mask_slice = self._mask[key]
+                    if isinstance(mask_slice, _xp.ndarray):
+                        self._mask[key] = self._mask[key] & mask_slice  # Keep existing masks
+                    else:
+                        # Scalar mask - if already masked, keep it masked
+                        if not mask_slice:
+                            self._mask[key] = False
+                else:
+                    self._mask[key] = False
+
+    def harden_mask(self) -> None:
+        """
+        Force the mask to hard, preventing unmasking of elements.
+        
+        When a mask is hard, masked values cannot be unmasked by assignment.
+        This is useful to prevent accidental unmasking of invalid data.
+        
+        Examples
+        --------
+        >>> import xupy as xp
+        >>> from xupy.ma import masked_array
+        >>> arr = masked_array([1.0, 2.0, 3.0], mask=[False, True, False])
+        >>> arr.harden_mask()
+        >>> arr[1] = 99.0  # Raises ValueError: Cannot unmask elements in a hard mask
+        """
+        self._is_hard_mask = True
+
+    def soften_mask(self) -> None:
+        """
+        Force the mask to soft, allowing unmasking of elements.
+        
+        When a mask is soft (default), masked values can be unmasked by assignment.
+        
+        Examples
+        --------
+        >>> import xupy as xp
+        >>> from xupy.ma import masked_array
+        >>> arr = masked_array([1.0, 2.0, 3.0], mask=[False, True, False], hard_mask=True)
+        >>> arr.soften_mask()
+        >>> arr[1] = 99.0  # Now works
+        """
+        self._is_hard_mask = False
 
     def asmarray(
         self, **kwargs: dict[str, _t.Any]
@@ -2539,10 +2926,15 @@ class _XupyMaskedArray:
         <class 'numpy.ma.core.MaskedArray'>
         """
         dtype = kwargs.pop("dtype", self.dtype)
+        fill_value = kwargs.pop("fill_value", self._fill_value)
+        hard_mask = kwargs.pop("hard_mask", self._is_hard_mask)
+        
         return _np.ma.masked_array(
             _xp.asnumpy(self.data),
             mask=_xp.asnumpy(self._mask),
             dtype=dtype,
+            fill_value=fill_value,
+            hard_mask=hard_mask,
             **kwargs,
         )
 
