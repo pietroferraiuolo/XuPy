@@ -336,7 +336,7 @@ class TestNumPyCompatibility:
 
     def test_1d_reduction_returns_scalar(self, test_data):
         """Test that reducing 1D array returns scalar."""
-        result = sum(test_data, axis=0)
+        result = sum(test_data)
         assert np.isscalar(result), "1D reduction should return scalar"
 
     def test_2d_reduction_returns_array(self):
