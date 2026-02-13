@@ -379,7 +379,7 @@ class _XupyMaskedArray:
         prefix = f"masked_array("
 
         dtype_needed = (
-            not _np.core.arrayprint.dtype_is_implied(self.dtype)
+            not _np._core.arrayprint.dtype_is_implied(self.dtype)
             or _np.all(self._mask)
             or self.size == 0
         )
@@ -432,7 +432,7 @@ class _XupyMaskedArray:
             suffix=",",
         )
         if dtype_needed:
-            reprs["dtype"] = _np.core.arrayprint.dtype_short_repr(self.dtype)
+            reprs["dtype"] = _np._core.arrayprint.dtype_short_repr(self.dtype)
 
         # join keys with values and indentations
         result = ",\n".join("{}{}={}".format(indents[k], k, reprs[k]) for k in keys)
@@ -704,19 +704,6 @@ class _XupyMaskedArray:
         return _XupyMaskedArray(new_data, new_mask)
 
     # --- Statistical Methods (Memory-Optimized) ---
-    def _extract_scalar_if_0d(self, result: _t.Any) -> _t.Any:
-        """
-        Extract Python scalar from 0-dimensional array for NumPy compatibility.
-        
-        If result is a 0-dimensional CuPy/NumPy array, extract the scalar value.
-        Otherwise, return as-is. This ensures compatibility with NumPy's behavior
-        where reductions return scalars when appropriate.
-        """
-        if isinstance(result, (_xp.ndarray, _np.ndarray)):
-            if result.ndim == 0:
-                return result.item()
-        return result
-
     def _combine_masks(self, mask1: _t.Union[_xp.ndarray, _NomaskSingleton], mask2: _t.Union[_xp.ndarray, _NomaskSingleton]) -> _t.Union[_xp.ndarray, _NomaskSingleton]:
         """
         Combine two masks using OR operation, handling nomask properly.
@@ -830,7 +817,7 @@ class _XupyMaskedArray:
                 if unmasked_data.size == 0:
                     return masked
                 result = _xp.mean(unmasked_data)
-            return self._extract_scalar_if_0d(result)
+            return result
         else:
             # Mean along specific axis - return a masked array
             keepdims = kwargs.get('keepdims', False)
@@ -909,7 +896,7 @@ class _XupyMaskedArray:
                 if unmasked_data.size == 0:
                     return masked
                 result = _xp.sum(unmasked_data)
-            return self._extract_scalar_if_0d(result)
+            return result
         else:
             # Sum along specific axis - return a masked array
             keepdims = kwargs.get('keepdims', False)
@@ -959,7 +946,7 @@ class _XupyMaskedArray:
             if unmasked_data.size == 0:
                 return _xp.nan
             result = _xp.std(unmasked_data)
-            return self._extract_scalar_if_0d(result)
+            return result
         else:
             # Std along specific axis - return a masked array
             keepdims = kwargs.get('keepdims', False)
@@ -1015,7 +1002,7 @@ class _XupyMaskedArray:
             if unmasked_data.size == 0:
                 return _xp.nan
             result = _xp.var(unmasked_data)
-            return self._extract_scalar_if_0d(result)
+            return result
         else:
             # Var along specific axis - return a masked array
             keepdims = kwargs.get('keepdims', False)
@@ -1074,7 +1061,7 @@ class _XupyMaskedArray:
             else:
                 unmasked_data = self.data
             result = _xp.min(unmasked_data)
-            return self._extract_scalar_if_0d(result)
+            return result
         else:
             # Min along specific axis - return a masked array
             keepdims = kwargs.get('keepdims', False)
@@ -1127,7 +1114,7 @@ class _XupyMaskedArray:
             else:
                 unmasked_data = self.data
             result = _xp.max(unmasked_data)
-            return self._extract_scalar_if_0d(result)
+            return result
         else:
             # Max along specific axis - return a masked array
             keepdims = kwargs.get('keepdims', False)
@@ -1406,10 +1393,10 @@ class _XupyMaskedArray:
         # Use GPU operations for better performance
         if axis is None:
             # Global count
-            return int(_xp.sum(~self._mask))
+            return _xp.sum(~self._mask)
         else:
             # Count along specific axis - use CuPy operations
-            return int(_xp.sum(~self._mask, axis=axis, **kwargs))
+            return _xp.sum(~self._mask, axis=axis, **kwargs)
 
     def is_masked(self) -> bool:
         """Return True if the array has any masked values.
@@ -1430,8 +1417,8 @@ class _XupyMaskedArray:
         True
         """
         if self._mask is nomask:
-            return False
-        return bool(_xp.any(self._mask))
+            return _xp.array(False)
+        return _xp.any(self._mask)
 
     def compressed(self) -> _xp.ndarray:
         """Return all the non-masked data as a 1-D array.
@@ -1469,11 +1456,11 @@ class _XupyMaskedArray:
             Number of masked elements.
         """
         if self._mask is nomask:
-            return 0
+            return _xp.array(0) if axis is None else _xp.zeros(self.shape, dtype=_xp.int64).sum(axis=axis)
         if axis is None:
-            return int(_xp.sum(self._mask))
+            return _xp.sum(self._mask)
         else:
-            return int(_xp.sum(self._mask, axis=axis))
+            return _xp.sum(self._mask, axis=axis)
 
     def count_unmasked(self, axis: _t.Optional[int] = None) -> int:
         """Count the number of unmasked elements.
@@ -1489,11 +1476,11 @@ class _XupyMaskedArray:
             Number of unmasked elements.
         """
         if self._mask is nomask:
-            return self.size
+            return _xp.array(self.size) if axis is None else _xp.full(self.shape, 1, dtype=_xp.int64).sum(axis=axis)
         if axis is None:
-            return int(_xp.sum(~self._mask))
+            return _xp.sum(~self._mask)
         else:
-            return int(_xp.sum(~self._mask, axis=axis))
+            return _xp.sum(~self._mask, axis=axis)
 
     def fill(self, value: _t.Scalar) -> None:
         """Set the fill value for masked elements.
@@ -2733,11 +2720,12 @@ class _XupyMaskedArray:
         else:
             mask_item = self._mask[item]
         
-        # If the result is a scalar, return a masked value
+        # If the result is 0-dimensional, return 0-d masked array (CuPy/NumPy native)
         if data_item.shape == ():
             if mask_item is not nomask and mask_item:
                 return masked
-            return data_item.item()
+            m_0d = _xp.array(False) if mask_item is nomask else mask_item
+            return _XupyMaskedArray(data_item, m_0d)
         return _XupyMaskedArray(data_item, mask_item)
 
     def __setitem__(self, key, value):

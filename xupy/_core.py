@@ -116,6 +116,21 @@ if _GPU:
 
     np = _np
     npma = _np.ma
+    
+    def asmarray(array: _t.NDArray[_t.Any]) -> _t.MaskedArray:
+        """
+        Converts an object to a masked array on the GPU.
+
+        Args:
+            array: Input array-like object.
+
+        Returns:
+            cupy.ma.MaskedArray: A masked array on the GPU. If the input is already a masked array, it is returned as is.
+        """
+        try:
+            return array.asmarray()
+        except AttributeError:
+            return _np.ma.masked_array(array.data, mask=array.mask)
 
     def set_device(device_id: int) -> None:
         """
@@ -680,3 +695,11 @@ else:
         if isinstance(array, _np.ma.MaskedArray):
             return array.data
         return array
+
+    def asmarray(array: _t.NDArray[_t.Any]) -> _t.MaskedArray:
+        """
+        Placeholder function for asmarray when GPU is not available.
+        """
+        if isinstance(array, _np.ma.MaskedArray):
+            return array
+        return _np.ma.masked_array(array)

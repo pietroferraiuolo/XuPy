@@ -1,4 +1,4 @@
-from typing import Any, Optional, Union, Protocol, runtime_checkable
+from typing import Any, Callable, Optional, Protocol, Sequence, Union, runtime_checkable
 from numpy.typing import NDArray, ArrayLike, DTypeLike
 from numpy.ma import masked_array
 
@@ -43,3 +43,4 @@ class XupyMaskedArrayProtocol(Protocol):
 
 # Main type for XuPy masked arrays
 XupyMaskedArray = XupyMaskedArrayProtocol
+MaskedArray = XupyMaskedArrayProtocol  # alias for annotations

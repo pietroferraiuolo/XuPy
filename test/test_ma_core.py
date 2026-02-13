@@ -36,6 +36,20 @@ def _to_numpy(arr: Any) -> np.ndarray:
     return np.asarray(arr)
 
 
+def _is_scalar_or_0d(x: Any) -> bool:
+    """True if x is a Python scalar or 0-d array (CuPy/NumPy native behavior)."""
+    return np.isscalar(x) or (hasattr(x, "shape") and x.shape == ())
+
+
+def _value(x: Any) -> Any:
+    """Extract Python scalar from x for comparison. x can be Python scalar, 0-d array, or 0-d MaskedArray."""
+    if hasattr(x, "mask") and hasattr(x, "data") and getattr(x, "shape", None) == ():
+        return _to_numpy(x.data).item()
+    if hasattr(x, "item") and (not hasattr(x, "shape") or x.shape == ()):
+        return x.item()
+    return x
+
+
 class TestInitialization:
     """Test MaskedArray initialization."""
 
@@ -206,54 +220,53 @@ class TestStatisticalMethods:
         mask = cp.array([False, True, False, False, True], dtype=bool)
         return masked_array(data, mask)
 
-    def test_sum_returns_scalar(self, test_data):
-        """Test that sum returns scalar when axis=None."""
+    def test_sum_returns_scalar_or_0d(self, test_data):
+        """Test that sum returns 0-d array or scalar when axis=None (CuPy/NumPy native)."""
         result = test_data.sum(axis=None)
-        assert np.isscalar(result)
-        assert result == 8.0  # 1 + 3 + 4
+        assert _is_scalar_or_0d(result)
+        assert _value(result) == 8.0  # 1 + 3 + 4
 
     def test_sum_with_axis(self, test_data):
         """Test sum with axis specified."""
         data_2d = cp.array([[1.0, 2.0], [3.0, 4.0]], dtype=cp.float32)
         arr_2d = masked_array(data_2d)
         result = arr_2d.sum(axis=0)
-        # Should return scalar if 0-d, otherwise array
         assert hasattr(result, 'shape') or np.isscalar(result)
 
-    def test_mean_returns_scalar(self, test_data):
-        """Test that mean returns scalar when axis=None."""
+    def test_mean_returns_scalar_or_0d(self, test_data):
+        """Test that mean returns 0-d array or scalar when axis=None."""
         result = test_data.mean(axis=None)
-        assert np.isscalar(result)
+        assert _is_scalar_or_0d(result)
         expected = (1.0 + 3.0 + 4.0) / 3
-        assert abs(result - expected) < 1e-6
+        assert abs(_value(result) - expected) < 1e-6
 
-    def test_std_returns_scalar(self, test_data):
-        """Test that std returns scalar when axis=None."""
+    def test_std_returns_scalar_or_0d(self, test_data):
+        """Test that std returns 0-d array or scalar when axis=None."""
         result = test_data.std(axis=None)
-        assert np.isscalar(result)
+        assert _is_scalar_or_0d(result)
         valid_data = np.array([1.0, 3.0, 4.0])
         expected = np.std(valid_data)
-        assert abs(result - expected) < 1e-5
+        assert abs(_value(result) - expected) < 1e-5
 
-    def test_var_returns_scalar(self, test_data):
-        """Test that var returns scalar when axis=None."""
+    def test_var_returns_scalar_or_0d(self, test_data):
+        """Test that var returns 0-d array or scalar when axis=None."""
         result = test_data.var(axis=None)
-        assert np.isscalar(result)
+        assert _is_scalar_or_0d(result)
         valid_data = np.array([1.0, 3.0, 4.0])
         expected = np.var(valid_data)
-        assert abs(result - expected) < 1e-5
+        assert abs(_value(result) - expected) < 1e-5
 
-    def test_min_returns_scalar(self, test_data):
-        """Test that min returns scalar when axis=None."""
+    def test_min_returns_scalar_or_0d(self, test_data):
+        """Test that min returns 0-d array or scalar when axis=None."""
         result = test_data.min(axis=None)
-        assert np.isscalar(result)
-        assert result == 1.0
+        assert _is_scalar_or_0d(result)
+        assert _value(result) == 1.0
 
-    def test_max_returns_scalar(self, test_data):
-        """Test that max returns scalar when axis=None."""
+    def test_max_returns_scalar_or_0d(self, test_data):
+        """Test that max returns 0-d array or scalar when axis=None."""
         result = test_data.max(axis=None)
-        assert np.isscalar(result)
-        assert result == 4.0
+        assert _is_scalar_or_0d(result)
+        assert _value(result) == 4.0
 
     def test_sum_all_masked(self):
         """Test sum when all values are masked."""
@@ -431,10 +444,10 @@ class TestIndexingAndSlicing:
         return masked_array(data, mask)
 
     def test_single_element_indexing(self, test_arr):
-        """Test single element indexing."""
+        """Test single element indexing (returns 0-d MaskedArray, CuPy/NumPy native)."""
         # Access unmasked element
         elem = test_arr[0, 0]
-        assert elem == 1.0 or isinstance(elem, (float, np.floating))
+        assert _value(elem) == 1.0
 
     def test_slicing(self, test_arr):
         """Test array slicing."""
@@ -515,20 +528,20 @@ class TestMaskOperations:
         return masked_array(data, mask)
 
     def test_count_masked(self, test_arr):
-        """Test count_masked method."""
-        assert test_arr.count_masked() == 2
+        """Test count_masked method (returns 0-d array, CuPy native)."""
+        assert _value(test_arr.count_masked()) == 2
 
     def test_count_unmasked(self, test_arr):
-        """Test count_unmasked method."""
-        assert test_arr.count_unmasked() == 2
+        """Test count_unmasked method (returns 0-d array, CuPy native)."""
+        assert _value(test_arr.count_unmasked()) == 2
 
     def test_is_masked(self, test_arr):
-        """Test is_masked method."""
-        assert test_arr.is_masked() == True
-        
+        """Test is_masked method (returns 0-d array, CuPy native)."""
+        assert bool(_value(test_arr.is_masked())) is True
+
         # Test with no mask
         no_mask_arr = masked_array(cp.array([1.0, 2.0, 3.0]))
-        assert no_mask_arr.is_masked() == False
+        assert bool(_value(no_mask_arr.is_masked())) is False
 
     def test_compressed(self, test_arr):
         """Test compressed method."""
@@ -550,20 +563,20 @@ class TestLogicalOperations:
     """Test logical operations."""
 
     def test_any(self):
-        """Test any() method."""
+        """Test any() method (returns 0-d array, CuPy native)."""
         data = cp.array([True, False, True], dtype=bool)
         mask = cp.array([False, False, True], dtype=bool)
         arr = masked_array(data, mask)
         result = arr.any()
-        assert result == True
+        assert bool(_value(result)) is True
 
     def test_all(self):
-        """Test all() method."""
+        """Test all() method (returns 0-d array, CuPy native)."""
         data = cp.array([True, True, False], dtype=bool)
         mask = cp.array([False, False, True], dtype=bool)
         arr = masked_array(data, mask)
         result = arr.all()
-        assert result == True  # False is masked, so all unmasked are True
+        assert bool(_value(result)) is True  # False is masked, so all unmasked are True
 
 
 class TestEdgeCases:
@@ -584,24 +597,24 @@ class TestEdgeCases:
         assert arr.item() == 42.0
 
     def test_scalar_input(self):
-        """Test scalar input."""
+        """Test scalar input (0-d array)."""
         arr = masked_array(42.0)
-        assert arr.item() == 42.0
+        assert _value(arr) == 42.0
 
     def test_all_masked(self):
         """Test array with all elements masked."""
         data = cp.array([1.0, 2.0, 3.0], dtype=cp.float32)
         mask = cp.array([True, True, True], dtype=bool)
         arr = masked_array(data, mask)
-        assert arr.count_masked() == 3
-        assert arr.count_unmasked() == 0
+        assert _value(arr.count_masked()) == 3
+        assert _value(arr.count_unmasked()) == 0
 
     def test_no_mask(self):
         """Test array with no mask."""
         data = cp.array([1.0, 2.0, 3.0], dtype=cp.float32)
         arr = masked_array(data)
-        assert arr.count_masked() == 0
-        assert arr.count_unmasked() == 3
+        assert _value(arr.count_masked()) == 0
+        assert _value(arr.count_unmasked()) == 3
 
     def test_nomask_singleton(self):
         """Test nomask singleton."""
@@ -642,20 +655,16 @@ class TestNumPyCompatibility:
     """Test NumPy compatibility."""
 
     def test_scalar_returns(self):
-        """Test that methods return scalars like NumPy."""
+        """Test that methods return scalar or 0-d array (CuPy/NumPy native)."""
         data = cp.array([1.0, 2.0, 3.0, 4.0], dtype=cp.float32)
         mask = cp.array([False, True, False, False], dtype=bool)
         arr = masked_array(data, mask)
-        
-        np_ma = np.ma.array([1.0, 2.0, 3.0, 4.0], mask=[False, True, False, False])
-        
-        # Compare return types
+
+        # All reductions with axis=None should return scalar-like (0-d or Python scalar)
         functions = ['sum', 'mean', 'std', 'var', 'min', 'max']
         for func_name in functions:
             xp_result = getattr(arr, func_name)(axis=None)
-            np_result = getattr(np_ma, func_name)(axis=None)
-            assert np.isscalar(xp_result) == np.isscalar(np_result), \
-                f"{func_name} scalar compatibility failed"
+            assert _is_scalar_or_0d(xp_result), f"{func_name} should return scalar or 0-d array"
 
     def test_roundtrip_conversion(self):
         """Test roundtrip conversion with NumPy."""
