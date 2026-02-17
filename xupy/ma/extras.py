@@ -679,11 +679,92 @@ def empty_like(
     arr: _t.ArrayLike,
     dtype: _t.Optional[_t.DTypeLike] = None,
 ) -> MaskedArray:
-    """
-    Return a new masked array with the same shape and type as a given array.
+    """Return a new masked array with the same shape and type as a given array.
+
+    Data is uninitialized; no elements are masked.
+
+    Parameters
+    ----------
+    arr : array_like
+        The shape and dtype of this array are used to create the result.
+    dtype : dtype, optional
+        Override the dtype of the result.
+
+    Returns
+    -------
+    MaskedArray
+        A masked array with the same shape and dtype as `arr`, no mask.
     """
     arr_cp = _cp.asarray(arr)
     data = _cp.empty_like(arr_cp, dtype=dtype)
+    mask = _cp.zeros(data.shape, dtype=MaskType)
+    return MaskedArray(data, mask=mask, dtype=data.dtype)
+
+
+def zeros_like(
+    arr: _t.ArrayLike,
+    dtype: _t.Optional[_t.DTypeLike] = None,
+) -> MaskedArray:
+    """Return a masked array of zeros with the same shape and type as a given array.
+
+    Parameters
+    ----------
+    arr : array_like
+        The shape and dtype of this array are used to create the result.
+    dtype : dtype, optional
+        Override the dtype of the result.
+
+    Returns
+    -------
+    MaskedArray
+        A masked array of zeros with the same shape and dtype as `arr`, no mask.
+
+    Examples
+    --------
+    >>> import xupy as xp
+    >>> from xupy.ma.extras import zeros_like
+    >>> original = xp.array([[1, 2], [3, 4]])
+    >>> zeros_like(original)
+    masked_array(data=[[0 0]
+     [0 0]], mask=[[False False]
+     [False False]])
+    """
+    arr_cp = _cp.asarray(arr)
+    data = _cp.zeros_like(arr_cp, dtype=dtype)
+    mask = _cp.zeros(data.shape, dtype=MaskType)
+    return MaskedArray(data, mask=mask, dtype=data.dtype)
+
+
+def ones_like(
+    arr: _t.ArrayLike,
+    dtype: _t.Optional[_t.DTypeLike] = None,
+) -> MaskedArray:
+    """Return a masked array of ones with the same shape and type as a given array.
+
+    Parameters
+    ----------
+    arr : array_like
+        The shape and dtype of this array are used to create the result.
+    dtype : dtype, optional
+        Override the dtype of the result.
+
+    Returns
+    -------
+    MaskedArray
+        A masked array of ones with the same shape and dtype as `arr`, no mask.
+
+    Examples
+    --------
+    >>> import xupy as xp
+    >>> from xupy.ma.extras import ones_like
+    >>> original = xp.array([[1.0, 2.0], [3.0, 4.0]])
+    >>> ones_like(original)
+    masked_array(data=[[1. 1.]
+     [1. 1.]], mask=[[False False]
+     [False False]])
+    """
+    arr_cp = _cp.asarray(arr)
+    data = _cp.ones_like(arr_cp, dtype=dtype)
     mask = _cp.zeros(data.shape, dtype=MaskType)
     return MaskedArray(data, mask=mask, dtype=data.dtype)
 
@@ -841,6 +922,8 @@ __all__ = [
     "min",
     "max",
     "empty_like",
+    "zeros_like",
+    "ones_like",
     "atleast_1d",
     "atleast_2d",
     "atleast_3d",

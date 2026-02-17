@@ -3,7 +3,7 @@ Comprehensive test suite for xupy.ma.extras module.
 
 Tests all extra functions for masked arrays including:
 - Statistical reductions (sum, mean, std, var, min, max, prod, average)
-- Array creation utilities (masked_all, masked_all_like, empty_like)
+- Array creation utilities (masked_all, masked_all_like, empty_like, zeros_like, ones_like)
 - 2D compress/mask (compress_nd, compress_rowcols, compress_rows, compress_cols, mask_rowcols, mask_rows, mask_cols)
 - Stacking and shape (atleast_1d/2d/3d, vstack, hstack, column_stack, dstack, stack, row_stack, hsplit)
 - diagflat, ediff1d, mr_
@@ -34,6 +34,8 @@ from xupy.ma.extras import (
     masked_all,
     masked_all_like,
     empty_like,
+    zeros_like,
+    ones_like,
     count_masked,
     issequence,
     compress_nd,
@@ -296,6 +298,26 @@ class TestArrayCreation:
         assert arr.dtype == np.float32
         assert arr.count_masked() == 0  # No masked elements
         assert not arr.mask.any()  # All False
+
+    def test_zeros_like(self):
+        """Test zeros_like function."""
+        original = cp.array([[1, 2], [3, 4]], dtype=cp.int32)
+        arr = zeros_like(original)
+        assert arr.shape == (2, 2)
+        assert arr.dtype == np.int32
+        assert arr.count_masked() == 0
+        assert not arr.mask.any()
+        assert float(cp.asnumpy(arr.data).sum()) == 0.0
+
+    def test_ones_like(self):
+        """Test ones_like function."""
+        original = cp.array([[1.0, 2.0], [3.0, 4.0]], dtype=cp.float32)
+        arr = ones_like(original)
+        assert arr.shape == (2, 2)
+        assert arr.dtype == np.float32
+        assert arr.count_masked() == 0
+        assert not arr.mask.any()
+        assert float(cp.asnumpy(arr.data).sum()) == 4.0
 
 
 class TestCountMasked:
