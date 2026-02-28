@@ -11,7 +11,7 @@ from .core import (
     MaskedArray,
 )
 import numpy as _np
-import cupy as _cp          # type: ignore
+from .. import _core as _xp
 from .. import typings as _t
 
 
@@ -25,13 +25,13 @@ def _ensure_masked_array(
         return a.copy() if copy else a
 
     if isinstance(a, _np.ma.MaskedArray):
-        data = _cp.asarray(a.data)
-        mask = nomask if a.mask is _np.ma.nomask else _cp.asarray(a.mask, dtype=MaskType)
+        data = _xp.asarray(a.data)
+        mask = nomask if a.mask is _np.ma.nomask else _xp.asarray(a.mask, dtype=MaskType)
         if copy:
             data = data.copy()
         return MaskedArray(data, mask=mask, dtype=data.dtype)
 
-    data_arr = _cp.asarray(a)
+    data_arr = _xp.asarray(a)
     if copy:
         data_arr = data_arr.copy()
     return MaskedArray(data_arr, mask=nomask, dtype=data_arr.dtype)
@@ -61,7 +61,7 @@ def issequence(seq: _t.ArrayLike) -> bool:
     >>> issequence(42)
     False
     """
-    return isinstance(seq, (_np.ndarray, _cp.ndarray, tuple, list))
+    return isinstance(seq, (_np.ndarray, _xp.ndarray, tuple, list))
 
 
 def count_masked(arr: _t.ArrayLike, axis: _t.Optional[int] = None) -> int:
@@ -97,10 +97,10 @@ def count_masked(arr: _t.ArrayLike, axis: _t.Optional[int] = None) -> int:
 
     if mask is nomask:
         if axis is None:
-            return _cp.array(0)
-        result = _cp.zeros(ma.data.shape, dtype=_cp.int8).sum(axis=axis)
+            return _xp.array(0)
+        result = _xp.zeros(ma.data.shape, dtype=_xp.int8).sum(axis=axis)
     else:
-        mask_int = mask.astype(_cp.int64, copy=False)
+        mask_int = mask.astype(_xp.int64, copy=False)
         result = mask_int.sum(axis=axis)
 
     return result
@@ -131,8 +131,8 @@ def masked_all(shape: tuple[int, ...], dtype: _t.DTypeLike = _np.float32) -> Mas
      [0. 0. 0.]], mask=[[True True True]
      [True True True]])
     """
-    data = _cp.zeros(shape, dtype=dtype)
-    mask = _cp.ones(shape, dtype=MaskType)
+    data = _xp.zeros(shape, dtype=dtype)
+    mask = _xp.ones(shape, dtype=MaskType)
     return MaskedArray(data, mask=mask, dtype=dtype)
 
 
@@ -160,9 +160,9 @@ def masked_all_like(arr: _t.ArrayLike) -> MaskedArray:
      [0 0]], mask=[[True True]
      [True True]])
     """
-    arr_cp = _cp.asarray(arr)
-    data = _cp.empty_like(arr_cp)
-    mask = _cp.ones_like(arr_cp, dtype=MaskType)
+    arr_cp = _xp.asarray(arr)
+    data = _xp.empty_like(arr_cp)
+    mask = _xp.ones_like(arr_cp, dtype=MaskType)
     return MaskedArray(data, mask=mask, dtype=data.dtype)
 
 
@@ -183,7 +183,7 @@ def _normalize_axis_tuple(
 def compress_nd(
     x: _t.ArrayLike,
     axis: _t.Union[int, tuple[int, ...], None] = None,
-) -> _cp.ndarray:
+) -> _xp.ndarray:
     """Suppress slices from dimensions that contain masked values.
 
     Parameters
@@ -206,14 +206,14 @@ def compress_nd(
 
     axis = _normalize_axis_tuple(axis, ma_arr.ndim)
 
-    if m is nomask or not _cp.any(m):
+    if m is nomask or not _xp.any(m):
         return data
-    if _cp.all(m):
-        return _cp.array([])
+    if _xp.all(m):
+        return _xp.array([])
 
     for ax in axis:
         axes_other = tuple(i for i in range(ma_arr.ndim) if i != ax)
-        keep = ~_cp.any(m, axis=axes_other)
+        keep = ~_xp.any(m, axis=axes_other)
         # Index: (slice(None),)*ax + (keep,) + (slice(None),)*(ndim - ax - 1)
         idx = (slice(None),) * ax + (keep,) + (slice(None),) * (ma_arr.ndim - ax - 1)
         data = data[idx]
@@ -224,7 +224,7 @@ def compress_nd(
 def compress_rowcols(
     x: _t.ArrayLike,
     axis: _t.Optional[int] = None,
-) -> _cp.ndarray:
+) -> _xp.ndarray:
     """Suppress rows and/or columns of a 2-D array that contain masked values.
 
     - If axis is None, both rows and columns are suppressed.
@@ -253,12 +253,12 @@ def compress_rowcols(
     return compress_nd(x, axis=axis_tuple)
 
 
-def compress_rows(a: _t.ArrayLike) -> _cp.ndarray:
+def compress_rows(a: _t.ArrayLike) -> _xp.ndarray:
     """Suppress whole rows of a 2-D array that contain masked values."""
     return compress_rowcols(a, 0)
 
 
-def compress_cols(a: _t.ArrayLike) -> _cp.ndarray:
+def compress_cols(a: _t.ArrayLike) -> _xp.ndarray:
     """Suppress whole columns of a 2-D array that contain masked values."""
     return compress_rowcols(a, 1)
 
@@ -280,18 +280,18 @@ def mask_rowcols(
         raise NotImplementedError("mask_rowcols works for 2D arrays only.")
     m = ma_arr.mask
     if m is nomask:
-        ma_arr._mask = _cp.zeros(ma_arr.data.shape, dtype=MaskType)
+        ma_arr._mask = _xp.zeros(ma_arr.data.shape, dtype=MaskType)
         m = ma_arr._mask
-    elif not _cp.any(m):
+    elif not _xp.any(m):
         return ma_arr
     else:
         m = ma_arr._mask
-    maskedval = _cp.nonzero(m)
+    maskedval = _xp.nonzero(m)
     if axis is None or axis == 0:
-        rows = _cp.unique(maskedval[0])
+        rows = _xp.unique(maskedval[0])
         m[rows, :] = True
     if axis is None or axis in (1, -1):
-        cols = _cp.unique(maskedval[1])
+        cols = _xp.unique(maskedval[1])
         m[:, cols] = True
     return ma_arr
 
@@ -387,10 +387,10 @@ def mean(
 
 
 def _counts_for_axis(
-    valid: _cp.ndarray,
+    valid: _xp.ndarray,
     axis: _t.Optional[int],
     keepdims: bool,
-) -> _cp.ndarray:
+) -> _xp.ndarray:
     """Count valid entries along an axis."""
     return valid.sum(axis=axis, keepdims=keepdims)
 
@@ -416,7 +416,7 @@ def prod(
         prod_kwargs["keepdims"] = True
 
     if mask is nomask:
-        result = _cp.prod(data, axis=axis, **prod_kwargs)
+        result = _xp.prod(data, axis=axis, **prod_kwargs)
         return result
 
     valid = ~mask
@@ -425,14 +425,14 @@ def prod(
         valid_count = int(valid.sum())
         if valid_count == 0:
             return masked
-        result = _cp.prod(data[valid], **prod_kwargs)
+        result = _xp.prod(data[valid], **prod_kwargs)
         return result
 
-    data_filled = _cp.where(valid, data, 1)
-    result = _cp.prod(data_filled, axis=axis, **prod_kwargs)
-    counts = _counts_for_axis(valid.astype(_cp.int8), axis, keepdims)
+    data_filled = _xp.where(valid, data, 1)
+    result = _xp.prod(data_filled, axis=axis, **prod_kwargs)
+    counts = _counts_for_axis(valid.astype(_xp.int8), axis, keepdims)
     mask_result = counts == 0
-    result_ma = MaskedArray(result, mask=_cp.asarray(mask_result, dtype=MaskType), dtype=result.dtype)
+    result_ma = MaskedArray(result, mask=_xp.asarray(mask_result, dtype=MaskType), dtype=result.dtype)
     return result_ma
 
 
@@ -622,14 +622,14 @@ def average(a: _t.ArrayLike, axis: _t.Optional[int] = None, weights: _t.Optional
 
     if weights is None:
         if valid is None:
-            weighted_sum = _cp.sum(data, **sum_kwargs)
-            sum_weights = _cp.sum(_cp.ones_like(data, dtype=_cp.float32), **sum_kwargs)
+            weighted_sum = _xp.sum(data, **sum_kwargs)
+            sum_weights = _xp.sum(_xp.ones_like(data, dtype=_xp.float32), **sum_kwargs)
         else:
-            data_filled = _cp.where(valid, data, 0)
-            weighted_sum = _cp.sum(data_filled, **sum_kwargs)
-            sum_weights = _cp.sum(valid.astype(_cp.float32), **sum_kwargs)
+            data_filled = _xp.where(valid, data, 0)
+            weighted_sum = _xp.sum(data_filled, **sum_kwargs)
+            sum_weights = _xp.sum(valid.astype(_xp.float32), **sum_kwargs)
     else:
-        wgt = _cp.asarray(weights)
+        wgt = _xp.asarray(weights)
 
         if wgt.shape != data.shape:
             if axis_norm is None:
@@ -649,17 +649,17 @@ def average(a: _t.ArrayLike, axis: _t.Optional[int] = None, weights: _t.Optional
             data_effective = data
             weights_effective = wgt
         else:
-            data_effective = _cp.where(valid, data, 0)
-            weights_effective = _cp.where(valid, wgt, 0)
+            data_effective = _xp.where(valid, data, 0)
+            weights_effective = _xp.where(valid, wgt, 0)
 
-        weighted_sum = _cp.sum(data_effective * weights_effective, **sum_kwargs)
-        sum_weights = _cp.sum(weights_effective, **sum_kwargs)
+        weighted_sum = _xp.sum(data_effective * weights_effective, **sum_kwargs)
+        sum_weights = _xp.sum(weights_effective, **sum_kwargs)
 
-    sum_weights = _cp.asarray(sum_weights, dtype=_cp.float32)
+    sum_weights = _xp.asarray(sum_weights, dtype=_xp.float32)
     mask_result = sum_weights == 0
-    safe_denominator = _cp.where(mask_result, 1.0, sum_weights)
-    avg = _cp.asarray(weighted_sum, dtype=_cp.result_type(weighted_sum, _cp.float32)) / safe_denominator
-    avg = _cp.where(mask_result, 0.0, avg)
+    safe_denominator = _xp.where(mask_result, 1.0, sum_weights)
+    avg = _xp.asarray(weighted_sum, dtype=_xp.result_type(weighted_sum, _xp.float32)) / safe_denominator
+    avg = _xp.where(mask_result, 0.0, avg)
 
     if axis_norm is None:
         result = masked if bool(mask_result) else avg
@@ -667,7 +667,7 @@ def average(a: _t.ArrayLike, axis: _t.Optional[int] = None, weights: _t.Optional
             return result, sum_weights
         return result
 
-    mask_array = _cp.asarray(mask_result, dtype=MaskType)
+    mask_array = _xp.asarray(mask_result, dtype=MaskType)
     average_ma = MaskedArray(avg, mask=mask_array, dtype=avg.dtype)
 
     if returned:
@@ -695,9 +695,9 @@ def empty_like(
     MaskedArray
         A masked array with the same shape and dtype as `arr`, no mask.
     """
-    arr_cp = _cp.asarray(arr)
-    data = _cp.empty_like(arr_cp, dtype=dtype)
-    mask = _cp.zeros(data.shape, dtype=MaskType)
+    arr_cp = _xp.asarray(arr)
+    data = _xp.empty_like(arr_cp, dtype=dtype)
+    mask = _xp.zeros(data.shape, dtype=MaskType)
     return MaskedArray(data, mask=mask, dtype=data.dtype)
 
 
@@ -729,9 +729,9 @@ def zeros_like(
      [0 0]], mask=[[False False]
      [False False]])
     """
-    arr_cp = _cp.asarray(arr)
-    data = _cp.zeros_like(arr_cp, dtype=dtype)
-    mask = _cp.zeros(data.shape, dtype=MaskType)
+    arr_cp = _xp.asarray(arr)
+    data = _xp.zeros_like(arr_cp, dtype=dtype)
+    mask = _xp.zeros(data.shape, dtype=MaskType)
     return MaskedArray(data, mask=mask, dtype=data.dtype)
 
 
@@ -763,22 +763,22 @@ def ones_like(
      [1. 1.]], mask=[[False False]
      [False False]])
     """
-    arr_cp = _cp.asarray(arr)
-    data = _cp.ones_like(arr_cp, dtype=dtype)
-    mask = _cp.zeros(data.shape, dtype=MaskType)
+    arr_cp = _xp.asarray(arr)
+    data = _xp.ones_like(arr_cp, dtype=dtype)
+    mask = _xp.zeros(data.shape, dtype=MaskType)
     return MaskedArray(data, mask=mask, dtype=data.dtype)
 
 
 # ---- From-NumPy-style wrappers (apply to data and mask) ----------------------
 
-def _mask_for_nx(ma_arr: MaskedArray) -> _cp.ndarray:
+def _mask_for_nx(ma_arr: MaskedArray) -> _xp.ndarray:
     """Full boolean mask array for use in fromnx wrappers (CuPy)."""
     if ma_arr.mask is nomask:
-        return _cp.zeros(ma_arr.data.shape, dtype=MaskType)
-    return _cp.asarray(ma_arr.mask, dtype=MaskType)
+        return _xp.zeros(ma_arr.data.shape, dtype=MaskType)
+    return _xp.asarray(ma_arr.mask, dtype=MaskType)
 
 
-def _fromnxfunction_single(npfunc: _t.Callable[..., _cp.ndarray], a: _t.ArrayLike, /, *args: _t.Any, **kwargs: _t.Any) -> MaskedArray:
+def _fromnxfunction_single(npfunc: _t.Callable[..., _xp.ndarray], a: _t.ArrayLike, /, *args: _t.Any, **kwargs: _t.Any) -> MaskedArray:
     """Apply a CuPy function to one masked array (data and mask)."""
     ma_arr = _ensure_masked_array(a)
     data_out = npfunc(ma_arr.data, *args, **kwargs)
@@ -786,7 +786,7 @@ def _fromnxfunction_single(npfunc: _t.Callable[..., _cp.ndarray], a: _t.ArrayLik
     return MaskedArray(data_out, mask=mask_out.astype(MaskType, copy=False), dtype=data_out.dtype)
 
 
-def _fromnxfunction_seq(npfunc: _t.Callable[..., _cp.ndarray], arys: _t.Sequence[_t.ArrayLike], /, *args: _t.Any, **kwargs: _t.Any) -> MaskedArray:
+def _fromnxfunction_seq(npfunc: _t.Callable[..., _xp.ndarray], arys: _t.Sequence[_t.ArrayLike], /, *args: _t.Any, **kwargs: _t.Any) -> MaskedArray:
     """Apply a CuPy function that takes a sequence of arrays (e.g. vstack)."""
     mas = [_ensure_masked_array(ary) for ary in arys]
     data_out = npfunc(tuple(m.data for m in mas), *args, **kwargs)
@@ -794,7 +794,7 @@ def _fromnxfunction_seq(npfunc: _t.Callable[..., _cp.ndarray], arys: _t.Sequence
     return MaskedArray(data_out, mask=mask_out.astype(MaskType, copy=False), dtype=data_out.dtype)
 
 
-def _fromnxfunction_allargs(npfunc: _t.Callable[..., _t.Union[_cp.ndarray, tuple]], *arys: _t.ArrayLike, **kwargs: _t.Any) -> _t.Union[MaskedArray, tuple[MaskedArray, ...]]:
+def _fromnxfunction_allargs(npfunc: _t.Callable[..., _t.Union[_xp.ndarray, tuple]], *arys: _t.ArrayLike, **kwargs: _t.Any) -> _t.Union[MaskedArray, tuple[MaskedArray, ...]]:
     """Apply a CuPy function to multiple array arguments (e.g. atleast_1d)."""
     mas = [_ensure_masked_array(a) for a in arys]
     data_out = npfunc(*(m.data for m in mas), **kwargs)
@@ -809,42 +809,42 @@ def _fromnxfunction_allargs(npfunc: _t.Callable[..., _t.Union[_cp.ndarray, tuple
 
 def atleast_1d(*arys: _t.ArrayLike, **kwargs: _t.Any) -> _t.Union[MaskedArray, tuple[MaskedArray, ...]]:
     """Convert inputs to masked arrays with at least one dimension."""
-    return _fromnxfunction_allargs(_cp.atleast_1d, *arys, **kwargs)
+    return _fromnxfunction_allargs(_xp.atleast_1d, *arys, **kwargs)
 
 
 def atleast_2d(*arys: _t.ArrayLike, **kwargs: _t.Any) -> _t.Union[MaskedArray, tuple[MaskedArray, ...]]:
     """View inputs as masked arrays with at least two dimensions."""
-    return _fromnxfunction_allargs(_cp.atleast_2d, *arys, **kwargs)
+    return _fromnxfunction_allargs(_xp.atleast_2d, *arys, **kwargs)
 
 
 def atleast_3d(*arys: _t.ArrayLike, **kwargs: _t.Any) -> _t.Union[MaskedArray, tuple[MaskedArray, ...]]:
     """View inputs as masked arrays with at least three dimensions."""
-    return _fromnxfunction_allargs(_cp.atleast_3d, *arys, **kwargs)
+    return _fromnxfunction_allargs(_xp.atleast_3d, *arys, **kwargs)
 
 
 def vstack(tup: _t.Sequence[_t.ArrayLike], *args: _t.Any, **kwargs: _t.Any) -> MaskedArray:
     """Stack arrays in sequence vertically (row wise)."""
-    return _fromnxfunction_seq(_cp.vstack, tup, *args, **kwargs)
+    return _fromnxfunction_seq(_xp.vstack, tup, *args, **kwargs)
 
 
 def hstack(tup: _t.Sequence[_t.ArrayLike], *args: _t.Any, **kwargs: _t.Any) -> MaskedArray:
     """Stack arrays in sequence horizontally (column wise)."""
-    return _fromnxfunction_seq(_cp.hstack, tup, *args, **kwargs)
+    return _fromnxfunction_seq(_xp.hstack, tup, *args, **kwargs)
 
 
 def column_stack(tup: _t.Sequence[_t.ArrayLike], *args: _t.Any, **kwargs: _t.Any) -> MaskedArray:
     """Stack 1-D arrays as columns into a 2-D masked array."""
-    return _fromnxfunction_seq(_cp.column_stack, tup, *args, **kwargs)
+    return _fromnxfunction_seq(_xp.column_stack, tup, *args, **kwargs)
 
 
 def dstack(tup: _t.Sequence[_t.ArrayLike], *args: _t.Any, **kwargs: _t.Any) -> MaskedArray:
     """Stack arrays in sequence depth wise (along third axis)."""
-    return _fromnxfunction_seq(_cp.dstack, tup, *args, **kwargs)
+    return _fromnxfunction_seq(_xp.dstack, tup, *args, **kwargs)
 
 
 def stack(arrays: _t.Sequence[_t.ArrayLike], axis: int = 0, *args: _t.Any, **kwargs: _t.Any) -> MaskedArray:
     """Join a sequence of masked arrays along a new axis."""
-    return _fromnxfunction_seq(lambda t: _cp.stack(t, axis=axis, *args, **kwargs), arrays)
+    return _fromnxfunction_seq(lambda t: _xp.stack(t, axis=axis, *args, **kwargs), arrays)
 
 
 def row_stack(tup: _t.Sequence[_t.ArrayLike], *args: _t.Any, **kwargs: _t.Any) -> MaskedArray:
@@ -855,14 +855,14 @@ def row_stack(tup: _t.Sequence[_t.ArrayLike], *args: _t.Any, **kwargs: _t.Any) -
 def hsplit(ary: _t.ArrayLike, indices_or_sections: _t.Union[int, _t.ArrayLike], *args: _t.Any, **kwargs: _t.Any) -> list[MaskedArray]:
     """Split a masked array horizontally (column-wise). Returns list of MaskedArrays."""
     ma_arr = _ensure_masked_array(ary)
-    data_parts = _cp.hsplit(ma_arr.data, indices_or_sections, *args, **kwargs)
-    mask_parts = _cp.hsplit(_mask_for_nx(ma_arr), indices_or_sections, *args, **kwargs)
+    data_parts = _xp.hsplit(ma_arr.data, indices_or_sections, *args, **kwargs)
+    mask_parts = _xp.hsplit(_mask_for_nx(ma_arr), indices_or_sections, *args, **kwargs)
     return [MaskedArray(d, mask=m.astype(MaskType, copy=False), dtype=d.dtype) for d, m in zip(data_parts, mask_parts)]
 
 
 def diagflat(v: _t.ArrayLike, k: int = 0) -> MaskedArray:
     """Create a 2-D masked array with the flattened input as a diagonal."""
-    return _fromnxfunction_single(_cp.diagflat, v, k=k)
+    return _fromnxfunction_single(_xp.diagflat, v, k=k)
 
 
 def ediff1d(ary: _t.ArrayLike, to_end: _t.Optional[_t.ArrayLike] = None, to_begin: _t.Optional[_t.ArrayLike] = None) -> MaskedArray:
@@ -870,27 +870,27 @@ def ediff1d(ary: _t.ArrayLike, to_end: _t.Optional[_t.ArrayLike] = None, to_begi
     ma_arr = _ensure_masked_array(ary)
     data = ma_arr.data
     m = _mask_for_nx(ma_arr)
-    out_data = _cp.ediff1d(data, to_end=to_end, to_begin=to_begin)
+    out_data = _xp.ediff1d(data, to_end=to_end, to_begin=to_begin)
     n = int(data.size)
     if n <= 1:
         # no diff part; only to_begin / to_end may contribute to out_data
-        out_mask = _cp.zeros(out_data.size, dtype=MaskType)
+        out_mask = _xp.zeros(out_data.size, dtype=MaskType)
     else:
         # output[i] masked if either input[i] or input[i+1] masked
         out_mask = (m[1:] | m[:-1]).astype(MaskType, copy=False)
         if to_begin is not None:
-            nb = int(_cp.size(to_begin))
-            out_mask = _cp.concatenate([_cp.zeros(nb, dtype=MaskType), out_mask])
+            nb = int(_xp.size(to_begin))
+            out_mask = _xp.concatenate([_xp.zeros(nb, dtype=MaskType), out_mask])
         if to_end is not None:
-            ne = int(_cp.size(to_end))
-            out_mask = _cp.concatenate([out_mask, _cp.zeros(ne, dtype=MaskType)])
+            ne = int(_xp.size(to_end))
+            out_mask = _xp.concatenate([out_mask, _xp.zeros(ne, dtype=MaskType)])
     return MaskedArray(out_data, mask=out_mask.astype(MaskType, copy=False), dtype=out_data.dtype)
 
 
 class _MRClass:
     """Minimal mr_ equivalent: concatenation along first axis (row stack). Use as mr_[a, b] or mr_[a, b, c]."""
 
-    def __getitem__(self, key: _t.Union[MaskedArray, _cp.ndarray, tuple]) -> MaskedArray:
+    def __getitem__(self, key: _t.Union[MaskedArray, _xp.ndarray, tuple]) -> MaskedArray:
         if isinstance(key, tuple):
             return vstack(key)
         return _ensure_masked_array(key)

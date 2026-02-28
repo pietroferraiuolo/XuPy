@@ -9,10 +9,12 @@ This module is the core of XuPy, it contains the functions and classes that are 
 import numpy as _np
 import time as _time
 import builtins as _b
+import sys as _sys
 from . import typings as _t
 from ._cupy_install import __check_availability__ as __check__
 
 _GPU = False
+_GPU_AVAILABLE = False
 
 __check__.xupy_init()
 __cuda_version__ = __check__.get_cuda_version()
@@ -51,6 +53,7 @@ try:
     del a  # cleanup
     gc.collect()
     _GPU = True
+    _GPU_AVAILABLE = True
     from cupy import *  # type: ignore
 
 except Exception as err:
@@ -60,10 +63,19 @@ except Exception as err:
 [XuPy] GPU Acceleration unavailable.
        Using CPU (NumPy)."""
         )
-    _GPU = False  # just to be sure ...
+    _GPU = False
+    _GPU_AVAILABLE = False
     from numpy import *  # type: ignore
 
 on_gpu = _GPU
+
+# Capture the set of names brought in by the wildcard import
+_backend_names = frozenset(
+    getattr(_xp if _GPU_AVAILABLE else _np, '__all__',
+            [n for n in dir(_xp if _GPU_AVAILABLE else _np) if not n.startswith('_')])
+)
+
+_mode_names: set[str] = set()
 
 
 # --- NUMPY Context manager ---
@@ -107,32 +119,13 @@ class NumpyContext:
             return "NumpyContext(no_gpu=True)"
 
 
-if _GPU:
+# ---------------------------------------------------------------------------
+# GPU-only definitions (only created when CuPy was successfully loaded)
+# ---------------------------------------------------------------------------
 
-    float = _xp.float32
-    double = _xp.float64
-    cfloat = _xp.complex64
-    cdouble = _xp.complex128
+if _GPU_AVAILABLE:
 
-    np = _np
-    npma = _np.ma
-    
-    def asmarray(array: _t.NDArray[_t.Any]) -> _t.MaskedArray:
-        """
-        Converts an object to a masked array on the GPU.
-
-        Args:
-            array: Input array-like object.
-
-        Returns:
-            cupy.ma.MaskedArray: A masked array on the GPU. If the input is already a masked array, it is returned as is.
-        """
-        try:
-            return array.asmarray()
-        except AttributeError:
-            return _np.ma.masked_array(array.data, mask=array.mask)
-
-    def set_device(device_id: int) -> None:
+    def _set_device(device_id: int) -> None:
         """
         Sets the default CUDA device for computations (cupy).
 
@@ -166,7 +159,7 @@ if _GPU:
             )
 
     # --- GPU Memory Management Context Manager ---
-    class MemoryContext:
+    class _MemoryContext:
         """Advanced GPU memory management context manager with automatic cleanup.
 
         Features:
@@ -264,15 +257,6 @@ if _GPU:
                     if "used" in final_mem:
                         memory_delta = final_mem["used"] - self._initial_memory
                         print(f"[MemoryContext] Session completed in {duration:.2f}s")
-                        # print(
-                        #     f"[MemoryContext] Initial memory: {self._initial_memory / (_B2mb_):.2f} MB"
-                        # )
-                        # print(
-                        #     f"[MemoryContext] Peak memory: {self._peak_memory / (_B2mb_):.2f} MB"
-                        # )
-                        # print(
-                        #     f"[MemoryContext] Final memory: {final_mem['used'] / (_B2mb_):.2f} MB"
-                        # )
                         print(
                             f"[MemoryContext] Memory delta: {memory_delta / (_B2mb_):.2f} MB"
                         )
@@ -683,11 +667,44 @@ if _GPU:
             percent = mem_info.get("memory_percent", 0) * 100
 
             return f"MemoryContext(device={mem_info.get('device')}, memory={used_mb:.2f}/{total_mb:.2f} MB ({percent:.1f}%))"
-else:
 
-    float = double = _np.float64
-    cfloat = cdouble = _np.complex128
 
+# ---------------------------------------------------------------------------
+# Mode-specific definition builders
+# ---------------------------------------------------------------------------
+
+def _gpu_definitions() -> dict:
+    """Return dict of names exposed only in GPU mode."""
+    def asmarray(array: _t.NDArray[_t.Any]) -> _t.MaskedArray:
+        """
+        Converts an object to a masked array on the GPU.
+
+        Args:
+            array: Input array-like object.
+
+        Returns:
+            cupy.ma.MaskedArray: A masked array on the GPU. If the input is already a masked array, it is returned as is.
+        """
+        try:
+            return array.asmarray()
+        except AttributeError:
+            return _np.ma.masked_array(array.data, mask=array.mask)
+
+    return {
+        'float': _xp.float32,
+        'double': _xp.float64,
+        'cfloat': _xp.complex64,
+        'cdouble': _xp.complex128,
+        'np': _np,
+        'npma': _np.ma,
+        'asmarray': asmarray,
+        'set_device': _set_device,
+        'MemoryContext': _MemoryContext,
+    }
+
+
+def _cpu_definitions() -> dict:
+    """Return dict of names exposed only in CPU mode."""
     def asnumpy(array: _t.NDArray[_t.Any]) -> _t.Array:
         """
         Placeholder function for asnumpy when GPU is not available.
@@ -703,3 +720,138 @@ else:
         if isinstance(array, _np.ma.MaskedArray):
             return array
         return _np.ma.masked_array(array)
+
+    return {
+        'float': _np.float64,
+        'double': _np.float64,
+        'cfloat': _np.complex128,
+        'cdouble': _np.complex128,
+        'asnumpy': asnumpy,
+        'asmarray': asmarray,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers for namespace management
+# ---------------------------------------------------------------------------
+
+def _apply_mode_definitions(defs: dict) -> None:
+    """Apply mode-specific names to _core and xupy namespaces."""
+    global _mode_names
+    _core_mod = _sys.modules[__name__]
+    _pkg_mod = _sys.modules.get('xupy')
+
+    for name in _mode_names:
+        _core_mod.__dict__.pop(name, None)
+        if _pkg_mod:
+            _pkg_mod.__dict__.pop(name, None)
+
+    for name, value in defs.items():
+        _core_mod.__dict__[name] = value
+        if _pkg_mod:
+            _pkg_mod.__dict__[name] = value
+
+    _mode_names = set(defs.keys())
+
+
+def _repopulate_backend(to_gpu: bool) -> None:
+    """Swap the array-library backend and mode-specific definitions."""
+    global _GPU, on_gpu, _backend_names, _mode_names
+
+    _core_mod = _sys.modules[__name__]
+    _pkg_mod = _sys.modules.get('xupy')
+
+    new_backend = _xp if to_gpu else _np
+    new_backend_names = frozenset(
+        getattr(new_backend, '__all__',
+                [n for n in dir(new_backend) if not n.startswith('_')])
+    )
+    new_mode_defs = _gpu_definitions() if to_gpu else _cpu_definitions()
+
+    # 1. Remove ALL old managed names (backend + mode) to start clean
+    for name in (_backend_names | _mode_names):
+        _core_mod.__dict__.pop(name, None)
+        if _pkg_mod:
+            _pkg_mod.__dict__.pop(name, None)
+
+    # 2. Add new backend names
+    for name in new_backend_names:
+        obj = getattr(new_backend, name)
+        _core_mod.__dict__[name] = obj
+        if _pkg_mod:
+            _pkg_mod.__dict__[name] = obj
+
+    # 3. Layer mode-specific names on top (takes precedence over backend)
+    for name, value in new_mode_defs.items():
+        _core_mod.__dict__[name] = value
+        if _pkg_mod:
+            _pkg_mod.__dict__[name] = value
+
+    _backend_names = new_backend_names
+    _mode_names = set(new_mode_defs.keys())
+
+    _GPU = to_gpu
+    on_gpu = to_gpu
+    _core_mod.__dict__['on_gpu'] = to_gpu
+    if _pkg_mod:
+        _pkg_mod.__dict__['on_gpu'] = to_gpu
+
+        # Restore xupy subpackages (e.g. xupy.ma) that may have been
+        # overwritten or removed by the backend wildcard swap.
+        _pkg_prefix = 'xupy.'
+        for _mod_name, _mod_obj in _sys.modules.items():
+            if (_mod_name.startswith(_pkg_prefix)
+                    and '.' not in _mod_name[len(_pkg_prefix):]):
+                _pkg_mod.__dict__[_mod_name[len(_pkg_prefix):]] = _mod_obj
+
+        # On CPU, replace xupy.ma with numpy.ma so masked arrays are native
+        # numpy.ma.MaskedArray.  On GPU, the loop above already restored
+        # XuPy's custom GPU-accelerated ma module.
+        if not to_gpu:
+            _pkg_mod.__dict__['ma'] = _np.ma
+
+
+# Apply initial mode-specific definitions
+if _GPU:
+    _apply_mode_definitions(_gpu_definitions())
+else:
+    _apply_mode_definitions(_cpu_definitions())
+
+
+# ---------------------------------------------------------------------------
+# Public switching API
+# ---------------------------------------------------------------------------
+
+def use_cpu() -> None:
+    """Switch XuPy to use NumPy (CPU) as the backend.
+
+    After calling this function, all new array operations (e.g. ``xp.array``,
+    ``xp.zeros``) will create NumPy arrays.  Existing arrays are **not**
+    converted automatically.
+    """
+    if not _GPU:
+        return
+    _repopulate_backend(to_gpu=False)
+    print("[XuPy] Switched to CPU (NumPy).")
+
+
+def use_gpu() -> None:
+    """Switch XuPy to use CuPy (GPU) as the backend.
+
+    After calling this function, all new array operations (e.g. ``xp.array``,
+    ``xp.zeros``) will create CuPy arrays.  Existing arrays are **not**
+    converted automatically.
+
+    Raises
+    ------
+    RuntimeError
+        If CuPy is not available on this system.
+    """
+    if _GPU:
+        return
+    if not _GPU_AVAILABLE:
+        raise RuntimeError(
+            "[XuPy] CuPy is not available on this system. Cannot switch to GPU."
+        )
+    _repopulate_backend(to_gpu=True)
+    print("[XuPy] Switched to GPU (CuPy).")

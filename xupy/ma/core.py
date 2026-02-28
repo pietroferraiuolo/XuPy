@@ -245,6 +245,7 @@ class _XupyMaskedArray:
     - Because mask handling is explicit and mask arrays are plain boolean
         arrays, users can implement custom mask logic (e.g., hierarchical masks,
         multi-state masks) on top of this wrapper.
+
     See also
     --------
     numpy.ma.MaskedArray : Reference implementation and semantics for masked arrays.
@@ -453,6 +454,9 @@ class _XupyMaskedArray:
         transfers the edge items from GPU to CPU to avoid memory issues and
         potential segmentation faults.
         """
+        if self._mask is nomask:
+            return _xp.asnumpy(self.data)
+
         # Get NumPy's print options to respect threshold settings
         threshold = _np.get_printoptions()['threshold']
         
