@@ -11,10 +11,12 @@ import time as _time
 import builtins as _b
 import sys as _sys
 from . import typings as _t
+from contextlib import contextmanager as _contextmanager
 from ._cupy_install import __check_availability__ as __check__
 
 _GPU = False
 _GPU_AVAILABLE = False
+_MULTIGPU = False
 
 __check__.xupy_init()
 __cuda_version__ = __check__.get_cuda_version()
@@ -25,8 +27,10 @@ try:
     import cupy as _xp # type: ignore
 
     _B2mb_ = 1024 * 1000  # using MB = 1,000,000 bytes
+    _Btgb_ = 1024 * 1000 * 1000  # using GB = 1,000,000,000 bytes
     n_gpus = _xp.cuda.runtime.getDeviceCount()
     if n_gpus > 1:
+        _MULTIGPU = True
         gpus = {}
         line1 = """
 [XuPy] Multiple GPUs detected:
@@ -68,6 +72,7 @@ except Exception as err:
     from numpy import *  # type: ignore
 
 on_gpu = _GPU
+has_multi_gpu = _MULTIGPU
 
 # Capture the set of names brought in by the wildcard import
 _backend_names = frozenset(
@@ -77,6 +82,48 @@ _backend_names = frozenset(
 
 _mode_names: set[str] = set()
 
+def _array_size(
+    shape: tuple[int] | list[tuple[int]],
+    dtype: _t.DTypeLike = _xp.float32,
+    out_unit: str = 'MB',
+) -> int:
+    """
+    Computes the expected allocated size on GPU of an array with size `shape` 
+    and data type `dtype`.
+
+    Parameters
+    ----------
+    shape : tuple[int] | list[tuple[int]]
+        The shape of the array. Can input multiple shapes as a list, and the
+        result will be the total size of all arrays combined.
+    dtype : DTypeLike, optional
+        The data type of the array elements (default: float32).
+    out_unit : str, optional
+        The unit for the output size. Can be 'MB' or 'GB' (default: 'MB').
+
+    Returns
+    -------
+    size : int
+        The size of the array in the specified unit.
+
+    Examples
+    --------
+    >>> import xupy as xp
+    >>> arr = xp.array([1, 2, 3])
+    >>> xp.array_size(arr)
+    12  # 3 elements * 4 bytes per int32
+    """
+    norm = _B2mb_ if out_unit == 'MB' else _Btgb_
+    if isinstance(shape, tuple):
+        if isinstance(shape[0], int):
+            shape = [shape]  # single shape case
+    size = []
+    for s in shape:
+        itemsize = _np.dtype(dtype).itemsize
+        num_elements = _np.prod(s)
+        size_bytes = num_elements * itemsize
+        size.append(int(size_bytes / norm))
+    return int(_np.sum(size))
 
 # --- NUMPY Context manager ---
 class NumpyContext:
@@ -114,6 +161,7 @@ class NumpyContext:
     def __repr__(self) -> str:
         """String representation of the context manager."""
         if _GPU:
+
             return f"NumpyContext(original_device={self.original_device})"
         else:
             return "NumpyContext(no_gpu=True)"
@@ -124,6 +172,125 @@ class NumpyContext:
 # ---------------------------------------------------------------------------
 
 if _GPU_AVAILABLE:
+    
+    def _allocate_with_fallback_device(
+        array: _t.ArrayLike,
+        dtype: _t.Optional[_t.DTypeLike] = None,
+        preferred_device: _t.Optional[int] = None,
+        safety_factor: float = 1.10,
+        reserve_mb: int = 128,
+        ) -> tuple[_t.NDArray[_t.Any], int]:
+        """
+        Allocate an array on the current/preferred GPU if enough memory is available.
+        If not, try other GPUs when multi-GPU is available.
+        
+        Parameters
+        ----------
+        array : ArrayLike
+            Input data to allocate on GPU.
+        dtype : DTypeLike, optional
+            Target dtype for allocation. If None, uses input dtype when available.
+        preferred_device : int, optional
+            Device to try first. If None, uses current CUDA device.
+        safety_factor : float, optional
+            Extra multiplicative margin on top of estimated size.
+        reserve_mb : int, optional
+            Additional fixed memory cushion to reduce OOM risk.
+
+        Returns
+        -------
+        gpu_array : NDArray
+            Allocated array on the selected GPU.
+        device_id : int
+            GPU id where the allocation was performed.
+
+        Raises
+        ------
+        RuntimeError
+            If GPU backend is not available.
+        MemoryError
+            If no device has enough free memory.
+        """
+        if not _GPU_AVAILABLE:
+            raise RuntimeError("[XuPy] GPU backend is not available.")
+
+        # Keep behavior explicit: this helper is for GPU allocation.
+        if not on_gpu:
+            raise RuntimeError("[XuPy] XuPy is in CPU mode. Call use_gpu() first.")
+
+        # Resolve dtype used for memory estimate and allocation.
+        target_dtype = dtype if dtype is not None else getattr(array, "dtype", _xp.float32)
+
+        # Estimate required memory in MB using existing XuPy helper.
+        shape = getattr(array, "shape", None)
+        if shape is None:
+            arr_np = _np.asarray(array, dtype=target_dtype)
+            shape = arr_np.shape
+        required_mb = _array_size(tuple(shape), dtype=target_dtype, out_unit="MB")
+        required_mb = int(required_mb * safety_factor) + int(reserve_mb)
+
+        current_device = _get_device()
+        first_device = current_device if preferred_device is None else int(preferred_device)
+
+        # Device probe order: preferred/current first, then the others.
+        device_order = [first_device]
+        if has_multi_gpu:
+            device_order.extend([d for d in range(n_gpus) if d != first_device])
+
+        for dev_id in device_order:
+            try:
+                with _on_device(dev_id):
+                    free_b, _ = _xp.cuda.runtime.memGetInfo()
+                    free_mb = int(free_b / _B2mb_)
+
+                if free_mb >= required_mb:
+                    with _on_device(dev_id):
+                        gpu_array = _xp.asarray(array, dtype=target_dtype)
+                    return gpu_array, dev_id
+            except Exception:
+                # Skip unavailable/busy devices and continue probing.
+                continue
+
+        raise MemoryError(
+            f"[XuPy] Cannot allocate array (~{required_mb} MB incl. margin) "
+            f"on probed devices {device_order}."
+        )
+    
+    @_contextmanager
+    def _on_device(device_id: int):
+        """
+        Context manager to temporarily set the CUDA device for computations (cupy).
+
+        Parameters
+        ----------
+        device_id : int
+            The ID of the CUDA device to set as default within the context.
+        
+        Raises
+        ------
+        RuntimeError : If the device cannot be set or if the device is already 
+        the current device.
+        
+        Examples
+        --------
+        >>> xp.on_device(0):
+        ...     # computations here will use device 0
+        ...     ...
+        >>> xp.on_device(1):
+        ...     # computations here will use device 1
+        ...     ...
+        """
+        original_device = _xp.cuda.runtime.getDevice()
+        try:
+            _set_device(device_id)
+            yield
+        finally:
+            # Restore original device
+            try:
+                _xp.cuda.runtime.setDevice(original_device)
+            except Exception as e:
+                print(f"Warning: Could not restore original device: {e}")
+    
 
     def _set_device(device_id: int) -> None:
         """
@@ -157,6 +324,28 @@ if _GPU_AVAILABLE:
             warnings.warn(
                 f"[XuPy] Device {device_id} is already the current device", UserWarning
             )
+    
+    def _get_device() -> int:
+        """
+        Get the current CUDA device ID.
+
+        Returns
+        -------
+        int
+            The ID of the current CUDA device.
+
+        Raises
+        ------
+        RuntimeError : If the GPU backend is not available.
+
+        Examples
+        --------
+        >>> current_device = xp.get_device()
+        >>> print(f"Current device ID: {current_device}")
+        """
+        if not _GPU_AVAILABLE:
+            return -1  # Indicate no GPU available
+        return int(_xp.cuda.runtime.getDevice())
 
     # --- GPU Memory Management Context Manager ---
     class _MemoryContext:
@@ -176,6 +365,8 @@ if _GPU_AVAILABLE:
             self,
             device_id: _t.Optional[int] = None,
             auto_cleanup: bool = True,
+            force_cleanup: bool = False,
+            print_report: bool = True,
             memory_threshold: float = 0.9,
             monitor_interval: float = 1.0,
         ):
@@ -188,15 +379,21 @@ if _GPU_AVAILABLE:
                 GPU device ID to manage. If None, uses current device.
             auto_cleanup : bool, optional
                 Whether to automatically cleanup memory on exit (default: True).
+            force_cleanup : bool, optional
+                Whether to force memory cleanup on exit (default: False).
+            print_report : bool, optional
+                Whether to print memory usage report on exit (default: True).
             memory_threshold : float, optional
                 Memory usage threshold (0-1) for automatic cleanup (default: 0.9).
             monitor_interval : float, optional
-                Interval in seconds for memory monitoring (default: 1.0).
+                Interval in milliseconds for memory monitoring (default: 1.0).
             """
             self.device_id = device_id
             self.auto_cleanup = auto_cleanup
+            self.force_cleanup = force_cleanup
             self.memory_threshold = memory_threshold
-            self.monitor_interval = monitor_interval
+            self.monitor_interval = monitor_interval/1000
+            self._print_report = print_report
 
             self._device_ctx = None
             self._original_device = None
@@ -237,33 +434,34 @@ if _GPU_AVAILABLE:
         def __exit__(self, exc_type, exc_val, exc_tb):
             """Exit the memory context with cleanup."""
             try:
-                if self.auto_cleanup:
+                if self.auto_cleanup or self.force_cleanup:
                     self.aggressive_cleanup()
 
-                # Cleanup tracked GPU objects
-                self._cleanup_gpu_objects()
+                    # Cleanup tracked GPU objects
+                    self._cleanup_gpu_objects()
 
-                # Restore original device
-                if _GPU and self._device_ctx is not None:
-                    try:
-                        self._device_ctx.__exit__(exc_type, exc_val, exc_tb)
-                    except Exception as e:
-                        print(f"Warning: Error restoring device context: {e}")
+                    # Restore original device
+                    if _GPU and self._device_ctx is not None:
+                        try:
+                            self._device_ctx.__exit__(exc_type, exc_val, exc_tb)
+                        except Exception as e:
+                            print(f"Warning: Error restoring device context: {e}")
 
                 # Final memory report
-                if self._start_time:
-                    duration = _time.time() - self._start_time
-                    final_mem = self.get_memory_info()
-                    if "used" in final_mem:
-                        memory_delta = final_mem["used"] - self._initial_memory
-                        print(f"[MemoryContext] Session completed in {duration:.2f}s")
-                        print(
-                            f"[MemoryContext] Memory delta: {memory_delta / (_B2mb_):.2f} MB"
-                        )
-                        if self._cleanup_count > 0:
+                if self._print_report:
+                    if self._start_time:
+                        duration = _time.time() - self._start_time
+                        final_mem = self.get_memory_info()
+                        if "used" in final_mem:
+                            memory_delta = final_mem["used"] - self._initial_memory
+                            print(f"[MemoryContext] Session completed in {duration:.2f}s")
                             print(
-                                f"[MemoryContext] Cleanup operations: {self._cleanup_count}"
+                                f"[MemoryContext] Memory delta: {memory_delta / (_B2mb_):.2f} MB"
                             )
+                            if self._cleanup_count > 0:
+                                print(
+                                    f"[MemoryContext] Cleanup operations: {self._cleanup_count}"
+                                )
 
             except Exception as e:
                 print(f"Warning: Error during memory context cleanup: {e}")
@@ -322,7 +520,8 @@ if _GPU_AVAILABLE:
             if not _GPU:
                 return
 
-            print("[MemoryContext] Performing aggressive memory cleanup...")
+            if self._print_report:
+                print("[MemoryContext] Performing aggressive memory cleanup...")
             self._cleanup_count += 1
 
             # Force garbage collection
@@ -385,17 +584,18 @@ if _GPU_AVAILABLE:
             except Exception as e:
                 print(f"Warning: Could not get CUDA memory info: {e}")
 
-            # As a last resort, try memory pool reset
-            try:
-                self.force_memory_pool_reset()
-            except Exception as e:
-                print(f"Warning: Memory pool reset failed: {e}")
+            if self.force_cleanup:
+                # As a last resort, try memory pool reset
+                try:
+                    self.force_memory_pool_reset()
+                except Exception as e:
+                    print(f"Warning: Memory pool reset failed: {e}")
 
-            # Final attempt: force memory deallocation
-            try:
-                self.force_memory_deallocation()
-            except Exception as e:
-                print(f"Warning: Forced memory deallocation failed: {e}")
+                # Final attempt: force memory deallocation
+                try:
+                    self.force_memory_deallocation()
+                except Exception as e:
+                    print(f"Warning: Forced memory deallocation failed: {e}")
 
         def emergency_cleanup(self):
             """Emergency cleanup for out-of-memory situations."""
@@ -495,9 +695,9 @@ if _GPU_AVAILABLE:
 
                 info = {
                     "device": int(device_to_query),
-                    "total": int(total),
-                    "free": int(free),
-                    "used": int(used),
+                    "total": int(total / _B2mb_),
+                    "free": int(free / _B2mb_),
+                    "used": int(used / _B2mb_),
                     "memory_percent": memory_percent,
                     "pool_used": pool_used,
                     "pool_capacity": pool_capacity,
@@ -612,10 +812,8 @@ if _GPU_AVAILABLE:
                 # Check memory after
                 free_after, _ = _xp.cuda.runtime.memGetInfo()
                 freed = free_after - free_before
-                # print(
-                #     f"[MemoryContext] Memory after forced deallocation: {free_after/(_B2mb_):.2f}/{total/(_B2mb_):.2f} MB"
-                # )
-                print(f"[MemoryContext] Memory freed: {freed/(_B2mb_):.2f} MB")
+                if self._print_report:
+                    print(f"[MemoryContext] Memory freed: {freed/(_B2mb_):.2f} MB")
 
             except Exception as e:
                 print(f"Warning: Could not force memory deallocation: {e}")
@@ -625,7 +823,8 @@ if _GPU_AVAILABLE:
             if not _GPU:
                 return
 
-            print("[MemoryContext] Performing memory pool reset...")
+            if self._print_report:
+                print("[MemoryContext] Performing memory pool reset...")
             try:
                 # Get current pool
                 old_pool = _xp.get_default_memory_pool()
@@ -647,7 +846,8 @@ if _GPU_AVAILABLE:
                 # Synchronize to ensure operations are complete
                 _xp.cuda.runtime.deviceSynchronize()
 
-                print("[MemoryContext] Memory pool reset completed")
+                if self._print_report:
+                    print("[MemoryContext] Memory pool reset completed")
 
             except Exception as e:
                 print(f"Warning: Could not reset memory pool: {e}")
@@ -675,6 +875,7 @@ if _GPU_AVAILABLE:
 
 def _gpu_definitions() -> dict:
     """Return dict of names exposed only in GPU mode."""
+
     def asmarray(array: _t.NDArray[_t.Any]) -> _t.MaskedArray:
         """
         Converts an object to a masked array on the GPU.
@@ -699,6 +900,8 @@ def _gpu_definitions() -> dict:
         'npma': _np.ma,
         'asmarray': asmarray,
         'set_device': _set_device,
+        'array_size': _array_size,
+        'on_device': _on_device,
         'MemoryContext': _MemoryContext,
     }
 
@@ -726,8 +929,10 @@ def _cpu_definitions() -> dict:
         'double': _np.float64,
         'cfloat': _np.complex128,
         'cdouble': _np.complex128,
+        'array_size': _array_size,
         'asnumpy': asnumpy,
         'asmarray': asmarray,
+        'on_device': lambda device_id: None,  # No-op on CPU
     }
 
 
