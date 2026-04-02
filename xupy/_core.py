@@ -168,6 +168,134 @@ class NumpyContext:
 
 
 # ---------------------------------------------------------------------------
+# CPU Memory Context Manager (always available, no-op mock for CPU mode)
+# ---------------------------------------------------------------------------
+
+class _CPUMemoryContext:
+    """CPU memory context manager — a no-op counterpart to the GPU _MemoryContext.
+
+    Provides the same interface as the GPU ``MemoryContext`` so that code written
+    against ``xp.MemoryContext`` runs transparently on CPU (NumPy) without any
+    changes.  All GPU-specific operations (pool cleanup, device synchronisation,
+    etc.) are silently skipped.
+
+    Example
+    -------
+    >>> import xupy as xp          # running in CPU mode
+    >>> with xp.MemoryContext() as ctx:
+    ...     arr = xp.array([1, 2, 3])
+    ...     print(ctx.get_memory_info())
+    """
+
+    def __init__(
+        self,
+        device_id: _t.Optional[int] = None,
+        auto_cleanup: bool = True,
+        memory_threshold: float = 0.9,
+        monitor_interval: float = 1.0,
+    ):
+        """
+        Parameters
+        ----------
+        device_id : int, optional
+            Ignored on CPU; present for API compatibility with the GPU version.
+        auto_cleanup : bool, optional
+            Kept for API compatibility; no cleanup is performed on CPU.
+        memory_threshold : float, optional
+            Kept for API compatibility; no threshold enforcement on CPU.
+        monitor_interval : float, optional
+            Kept for API compatibility; no monitoring is performed on CPU.
+        """
+        self.device_id = device_id
+        self.auto_cleanup = auto_cleanup
+        self.memory_threshold = memory_threshold
+        self.monitor_interval = monitor_interval
+
+        self._start_time: _t.Optional[float] = None
+
+    def __enter__(self):
+        """Enter the CPU memory context."""
+        self._start_time = _time.time()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Exit the CPU memory context (no-op cleanup)."""
+        if self._start_time is not None:
+            duration = _time.time() - self._start_time
+            print(f"[MemoryContext] Session completed in {duration:.2f}s (CPU mode)")
+
+    def track_object(self, obj):
+        """No-op: object tracking is not needed on CPU."""
+        pass
+
+    def clear_cache(self):
+        """No-op: no GPU memory pool to clear on CPU."""
+        pass
+
+    def aggressive_cleanup(self):
+        """No-op: no GPU memory to aggressively free on CPU."""
+        pass
+
+    def emergency_cleanup(self):
+        """No-op: no GPU memory emergency cleanup needed on CPU."""
+        pass
+
+    def get_memory_info(self) -> dict:
+        """Return basic CPU/RAM memory information where available.
+
+        Uses ``psutil`` when installed; otherwise returns a minimal dict.
+        """
+        info: dict = {"device": "cpu"}
+        try:
+            import psutil  # type: ignore
+            vm = psutil.virtual_memory()
+            info.update(
+                {
+                    "total": vm.total,
+                    "free": vm.available,
+                    "used": vm.used,
+                    "memory_percent": vm.percent / 100.0,
+                }
+            )
+        except ImportError:
+            info["error"] = "psutil not installed; install it for detailed CPU memory info"
+        return info
+
+    def check_memory_pressure(self) -> bool:
+        """Check if RAM usage is above the threshold (requires psutil)."""
+        mem_info = self.get_memory_info()
+        if "memory_percent" in mem_info:
+            return mem_info["memory_percent"] > self.memory_threshold
+        return False
+
+    def auto_cleanup_if_needed(self):
+        """No-op: no GPU pressure-based cleanup on CPU."""
+        pass
+
+    def monitor_memory(self, duration: float = 10.0):
+        """No-op: memory monitoring is not performed in CPU mode."""
+        pass
+
+    def force_memory_deallocation(self):
+        """No-op: forced GPU memory deallocation is not applicable on CPU."""
+        pass
+
+    def force_memory_pool_reset(self):
+        """No-op: GPU memory pool reset is not applicable on CPU."""
+        pass
+
+    def __repr__(self) -> str:
+        """String representation of the CPU memory context."""
+        mem_info = self.get_memory_info()
+        if "used" in mem_info:
+            used_mb = mem_info["used"] / (1024 * 1000)
+            total_mb = mem_info["total"] / (1024 * 1000)
+            percent = mem_info["memory_percent"] * 100
+            return f"MemoryContext(device=cpu, memory={used_mb:.2f}/{total_mb:.2f} MB ({percent:.1f}%))"
+        return "MemoryContext(device=cpu)"
+
+
+# ---------------------------------------------------------------------------
 # GPU-only definitions (only created when CuPy was successfully loaded)
 # ---------------------------------------------------------------------------
 
@@ -932,6 +1060,7 @@ def _cpu_definitions() -> dict:
         'array_size': _array_size,
         'asnumpy': asnumpy,
         'asmarray': asmarray,
+        'MemoryContext': _CPUMemoryContext,
         'on_device': lambda device_id: None,  # No-op on CPU
     }
 

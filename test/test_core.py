@@ -19,7 +19,7 @@ except ImportError:
     HAS_CUPY = False
 
 import xupy as xp
-from xupy._core import NumpyContext, on_gpu
+from xupy._core import NumpyContext, _CPUMemoryContext, on_gpu
 
 # Skip all tests if CuPy is not available
 pytestmark = pytest.mark.skipif(not HAS_CUPY, reason="CuPy not available")
