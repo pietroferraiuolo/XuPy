@@ -191,6 +191,8 @@ class _CPUMemoryContext:
         self,
         device_id: _t.Optional[int] = None,
         auto_cleanup: bool = True,
+        force_cleanup: bool = False,
+        print_report: bool = True,
         memory_threshold: float = 0.9,
         monitor_interval: float = 1.0,
     ):
@@ -208,6 +210,8 @@ class _CPUMemoryContext:
         """
         self.device_id = device_id
         self.auto_cleanup = auto_cleanup
+        self.force_cleanup = force_cleanup
+        self.print_report = print_report
         self.memory_threshold = memory_threshold
         self.monitor_interval = monitor_interval
 
@@ -222,7 +226,8 @@ class _CPUMemoryContext:
         """Exit the CPU memory context (no-op cleanup)."""
         if self._start_time is not None:
             duration = _time.time() - self._start_time
-            print(f"[MemoryContext] Session completed in {duration:.2f}s (CPU mode)")
+            if self.print_report:
+                print(f"[MemoryContext] Session completed in {duration:.2f}s (CPU mode)")
 
     def track_object(self, obj):
         """No-op: object tracking is not needed on CPU."""
@@ -383,7 +388,8 @@ if _GPU_AVAILABLE:
             f"[XuPy] Cannot allocate array (~{required_mb} MB incl. margin) "
             f"on probed devices {device_order}."
         )
-    
+
+
     @_contextmanager
     def _on_device(device_id: int):
         """
@@ -393,28 +399,40 @@ if _GPU_AVAILABLE:
         ----------
         device_id : int
             The ID of the CUDA device to set as default within the context.
-        
+            
+            If ``-1`` is passed, it will switch to CPU mode within the context 
+            and restore GPU mode on exit.
+
         Raises
         ------
         RuntimeError : If the device cannot be set or if the device is already 
-        the current device.
-        
+            the current device.
+
         Examples
         --------
-        >>> xp.on_device(0):
-        ...     # computations here will use device 0
-        ...     ...
-        >>> xp.on_device(1):
-        ...     # computations here will use device 1
-        ...     ...
+        .. code-block:: python
+            with xp.on_device(0):
+                # computations here will use device 0
+                array = xp.array([1,2,3]) # array allocated on GPU 0
+            with xp.on_device(1):
+                # computations here will use device 1
+                array = xp.array([4,5,6]) # array allocated on GPU 1
+            with xp.on_device(-1):
+                # computations here will use CPU
+                array = xp.array([7,8,9]) # array allocated on CPU
         """
         original_device = _xp.cuda.runtime.getDevice()
         try:
-            _set_device(device_id)
+            if device_id == -1:
+                use_cpu()
+            else:
+                _set_device(device_id)
             yield
         finally:
             # Restore original device
             try:
+                if device_id == -1:
+                    use_gpu()
                 _xp.cuda.runtime.setDevice(original_device)
             except Exception as e:
                 print(f"Warning: Could not restore original device: {e}")
