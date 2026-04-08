@@ -84,7 +84,7 @@ _mode_names: set[str] = set()
 
 def _array_size(
     shape: tuple[int] | list[tuple[int]],
-    dtype: _t.DTypeLike = _xp.float32,
+    dtype: _t.DTypeLike = _np.float32,
     out_unit: str = 'MB',
 ) -> int:
     """

@@ -1,9 +1,10 @@
 from setuptools import setup, find_packages
 from setuptools.command.install import install
+import tomllib
 
-about = {}
-with open("xupy/__version__.py") as f:
-    exec(f.read(), about)
+with open('pyproject.toml', 'rb') as f:
+    data = tomllib.load(f)
+    __version__ = data['project']['version']
 
 class CustomInstall(install):
     def run(self):
@@ -20,11 +21,11 @@ class CustomInstall(install):
 
 setup(
     name="XuPy",
-    version=about['__version__'],
+    version=__version__,
     description="GPU Accelerated masked arrays with automatic handling of CPU and GPU arrays.",
     author="Pietro Ferraiuolo",
     author_email="pietro.ferraiuolo@inaf.it",
-    packages=find_packages(),  # ["xupy", "xupy.ma"],
+    packages=find_packages(),
     install_requires=["numpy"],
     python_requires=">=3.10",
     cmdclass={
