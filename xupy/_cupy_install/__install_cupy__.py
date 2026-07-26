@@ -2,7 +2,7 @@
 """
 Script to automatically detect CUDA installation and install the appropriate CuPy version.
 """
-ASKED_FOR_CUPY = True
+ASKED_FOR_CUPY = False
 
 import subprocess
 import sys

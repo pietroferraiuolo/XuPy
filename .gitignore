@@ -1,3 +1,6 @@
+# Ignoring the cupy installation script for errouneous coded True in ASKED_FOR_CUPY
+xupy/_cupy_install/__install_cupy__.py
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
