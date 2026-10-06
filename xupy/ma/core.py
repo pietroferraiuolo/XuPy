@@ -2681,9 +2681,18 @@ class _XupyMaskedArray:
         for i in range(len(self)):
             yield self[i]
 
-    def __array__(self, dtype=None):
+    def __array__(self, dtype=None, copy=None):
         """Convert to numpy array."""
-        return _xp.asnumpy(self.data)
+        if copy is False and not isinstance(self.data, _np.ndarray):
+            raise ValueError(
+                "Unable to avoid copy while creating a NumPy array from GPU data."
+            )
+        result = _xp.asnumpy(self.data)
+        if dtype is not None:
+            result = result.astype(dtype, copy=False)
+        if copy is True and result is self.data:
+            result = result.copy()
+        return result
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
         """Handle ufunc calls."""

@@ -18,8 +18,23 @@ XuPy is a comprehensive Python package that provides GPU-accelerated masked arra
 ## Installation
 
 ```bash
-pip install xupy
+pip install xupy              # CPU only (NumPy >= 2.0)
+pip install "xupy[cuda12]"    # with CuPy for CUDA 12.x
+pip install "xupy[cuda13]"    # with CuPy for CUDA 13.x
 ```
+
+Pick the extra matching the "CUDA Version" reported by `nvidia-smi`.
+
+Alternatively, install XuPy and then let the helper detect your CUDA version and install CuPy:
+
+```bash
+pip install xupy
+python -m xupy.install_cupy      # or: xupy-install-cupy
+```
+
+Options: `--dry-run` (show the command without running it), `-y/--yes` (do not ask for confirmation), `--package PKG` (install a specific CuPy package, e.g. `cupy-cuda12x`).
+
+`import xupy` never prompts. If an NVIDIA GPU is present but CuPy is unusable, XuPy falls back to NumPy and emits a single warning; set `XUPY_NO_GPU_WARNING=1` to silence it.
 
 ## Quick Start
 
@@ -53,9 +68,15 @@ XuPy automatically detects GPU availability and provides significant speedup for
 
 ## GPU Requirements
 
-- **CUDA-compatible GPU** with compute capability 3.0+
-- **CuPy** package installed (`pip install cupy-cuda12x` for CUDA 12.x)
+- **A GPU supported by CuPy >= 14** (see the CuPy documentation)
+- **CuPy >= 14** (optional) installed, e.g. `pip install "xupy[cuda12]"` or `pip install "xupy[cuda13]"`
 - **Automatic fallback** to NumPy if GPU is unavailable
+
+## Requirements
+
+- Python >= 3.10
+- NumPy >= 2.0
+- CuPy >= 14 (optional, for GPU support)
 
 ## API Compatibility
 
@@ -109,7 +130,7 @@ with xp.MemoryContext(memory_threshold=0.8, auto_cleanup=True) as ctx:
 
 ## Documentation
 
-For detailed documentation, including comprehensive API reference and advanced usage examples, see [docs.md](docs.md).
+For detailed documentation, including comprehensive API reference and advanced usage examples, see [docs/source/index.md](docs/source/index.md).
 
 ## License
 

@@ -605,7 +605,7 @@ def average(a: _t.ArrayLike, axis: _t.Optional[int] = None, weights: _t.Optional
     if axis is not None:
         axis_norm = axis if axis >= 0 else axis + data.ndim
         if axis_norm < 0 or axis_norm >= data.ndim:
-            raise _np.AxisError(axis, data.ndim)
+            raise _np.exceptions.AxisError(axis, data.ndim)
     else:
         axis_norm = None
 

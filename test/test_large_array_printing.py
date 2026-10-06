@@ -9,6 +9,7 @@ import numpy as np
 
 
 @pytest.mark.skipif(not xp.on_gpu, reason="Requires GPU")
+@pytest.mark.slow
 class TestLargeArrayPrinting:
     """Tests for printing large masked arrays without segfault."""
     
@@ -137,6 +138,7 @@ class TestLargeArrayPrinting:
 
 
 @pytest.mark.skipif(not xp.on_gpu, reason="Requires GPU")
+@pytest.mark.slow
 class TestPrintingMemoryEfficiency:
     """Tests for memory-efficient printing."""
     

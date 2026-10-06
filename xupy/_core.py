@@ -7,28 +7,79 @@ This module is the core of XuPy, it contains the functions and classes that are 
 """
 
 import numpy as _np
+import os as _os
+import shutil as _shutil
 import time as _time
 import builtins as _b
 import sys as _sys
+import warnings as _warnings
 from . import typings as _t
 from contextlib import contextmanager as _contextmanager
-from ._cupy_install import __check_availability__ as __check__
+
+_B2mb_ = 1024 * 1000  # using MB = 1,000,000 bytes
+_Btgb_ = 1024 * 1000 * 1000  # using GB = 1,000,000,000 bytes
 
 _GPU = False
 _GPU_AVAILABLE = False
 _MULTIGPU = False
+n_gpus = 0
+gpus = {}
+__cuda_version__ = None
 
-__check__.xupy_init()
-__cuda_version__ = __check__.get_cuda_version()
 
-del __check__
+def _nvidia_gpu_present() -> bool:
+    """Heuristic: True if an NVIDIA driver tool is on PATH (no subprocess is run)."""
+    return _shutil.which("nvidia-smi") is not None
 
+
+def _warn_gpu_unusable(reason: str, cupy_importable: bool = False) -> None:
+    """Emit a single UserWarning when an NVIDIA GPU seems present but CuPy is unusable."""
+    flag = _os.environ.get("XUPY_NO_GPU_WARNING", "").strip().lower()
+    if flag not in ("", "0", "false", "no"):
+        return
+    if not (cupy_importable or _nvidia_gpu_present()):
+        return
+    # Point at the first frame outside the xupy package.
+    pkg_dir = _os.path.dirname(_os.path.abspath(__file__))
+    level, frame = 1, _sys._getframe(0)
+    while frame is not None:
+        fname = _os.path.abspath(frame.f_code.co_filename)
+        if "importlib" in fname and "_bootstrap" in fname:
+            frame = frame.f_back  # the warnings module skips these frames itself
+            continue
+        if not fname.startswith(pkg_dir + _os.sep):
+            break
+        frame = frame.f_back
+        level += 1
+    _warnings.warn(
+        f"[XuPy] NVIDIA GPU detected but CuPy is not usable ({reason}); using NumPy. "
+        "Install with: pip install xupy[cuda12] / xupy[cuda13], or: "
+        "python -m xupy.install_cupy. Silence with XUPY_NO_GPU_WARNING=1.",
+        UserWarning,
+        stacklevel=level,
+    )
+
+
+_cupy_err = None
+_cupy_importable = False
 try:
-    import cupy as _xp # type: ignore
+    import cupy as _xp  # type: ignore
 
-    _B2mb_ = 1024 * 1000  # using MB = 1,000,000 bytes
-    _Btgb_ = 1024 * 1000 * 1000  # using GB = 1,000,000,000 bytes
+    _cupy_importable = True
+    # Prove that kernels compile and run, not just that memory can be allocated.
+    if int((_xp.arange(4) + 1).sum().item()) != 10:
+        raise RuntimeError("CuPy kernel sanity check returned a wrong result")
+    __cuda_version__ = (
+        lambda v: f"{v // 1000}.{(v % 1000) // 10}"
+    )(_xp.cuda.runtime.runtimeGetVersion())
     n_gpus = _xp.cuda.runtime.getDeviceCount()
+except Exception as err:  # any cupy failure means CPU fallback
+    _cupy_err = err
+    _xp = _np  # never leave a broken (or unbound) CuPy behind on CPU fallback
+    __cuda_version__ = None
+    n_gpus = 0
+
+if _cupy_err is None:
     if n_gpus > 1:
         _MULTIGPU = True
         gpus = {}
@@ -49,26 +100,15 @@ try:
         f"""
 {line1}       Using CuPy {_xp.__version__} for acceleration."""
     )
-
-    # Test cupy is working on the system
-    import gc
-
-    a = _xp.array([1, 2, 3])  # test array
-    del a  # cleanup
-    gc.collect()
     _GPU = True
     _GPU_AVAILABLE = True
     from cupy import *  # type: ignore
-
-except Exception as err:
-    if not __cuda_version__ is None:
-        print(
-            f"""
-[XuPy] GPU Acceleration unavailable.
-       Using CPU (NumPy)."""
-        )
-    _GPU = False
-    _GPU_AVAILABLE = False
+else:
+    _reason = (str(_cupy_err).strip().splitlines() or [""])[0]
+    _reason = f"{type(_cupy_err).__name__}: {_reason}" if _reason else type(_cupy_err).__name__
+    if len(_reason) > 120:
+        _reason = _reason[:117] + "..."
+    _warn_gpu_unusable(_reason, cupy_importable=_cupy_importable)
     from numpy import *  # type: ignore
 
 on_gpu = _GPU
@@ -1038,10 +1078,6 @@ def _gpu_definitions() -> dict:
             return _np.ma.masked_array(array.data, mask=array.mask)
 
     return {
-        'float': _xp.float32,
-        'double': _xp.float64,
-        'cfloat': _xp.complex64,
-        'cdouble': _xp.complex128,
         'np': _np,
         'npma': _np.ma,
         'asmarray': asmarray,
@@ -1071,10 +1107,6 @@ def _cpu_definitions() -> dict:
         return _np.ma.masked_array(array)
 
     return {
-        'float': _np.float64,
-        'double': _np.float64,
-        'cfloat': _np.complex128,
-        'cdouble': _np.complex128,
         'array_size': _array_size,
         'asnumpy': asnumpy,
         'asmarray': asmarray,
