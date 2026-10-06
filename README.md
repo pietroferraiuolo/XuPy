@@ -58,6 +58,38 @@ mean_val = am.mean()
 std_val = am.std()
 ```
 
+## Backends and Devices
+
+`xp` is a NumPy 2.x namespace backed by CuPy (GPU) when it is usable, NumPy (CPU) otherwise. The namespace is resolved at every access, so it always reflects the active backend.
+
+```python
+import xupy as xp
+
+xp.use_cpu()                 # global default: NumPy (thread-safe, idempotent)
+xp.use_gpu()                 # global default: CuPy (RuntimeError if CuPy is unusable)
+
+with xp.backend("cpu"):      # scoped, thread- and asyncio-local ("cpu"/"numpy"/"gpu"/"cupy")
+    a = xp.zeros(3)          # NumPy array; other threads are unaffected
+
+xp.on_gpu                    # live: reflects the active backend
+```
+
+- `xp.ma` follows the backend: XuPy's GPU masked arrays on GPU, `numpy.ma` on CPU. `xp.np` and `xp.npma` are always `numpy` and `numpy.ma`.
+- `from xupy import on_gpu` (and `from xupy import *`) is a snapshot taken at import time; use `xp.on_gpu` for the live value.
+- `use_cpu()`/`use_gpu()` change the default for *all* threads. A switch from another thread while a computation is running can split it across backends; for concurrent code prefer `with xp.backend(...)`, which only affects the current thread/task.
+- Masked arrays from `xupy.ma` resolve the backend on each operation, so use them under the backend that was active when they were created (e.g. don't operate on a GPU masked array inside `with xp.backend("cpu")`).
+- Because `xupy.ma` follows the backend, `import xupy.ma.core as mc` yields `numpy.ma.core` on CPU; use `from xupy.ma import core` or `sys.modules["xupy.ma"]` to always reach XuPy's module.
+- Names removed in NumPy 2 (`NaN`, `float_`, `in1d`, `trapz`, ...) raise `AttributeError` with a hint on both backends, e.g. `xupy has no attribute 'NaN': removed in NumPy 2.0, use 'nan'`.
+- NumPy 2 names CuPy lacks are shimmed on GPU (`vecdot`, `unstack`, `sort(stable=, descending=)`, `unique(sorted=)`, `errstate`, `linalg.vector_norm`, ...). Host-only names with no CuPy equivalent (`emath`, `strings`, `char`, `rec`, ...) raise an `AttributeError` that points to `xp.backend("cpu")` / `xp.asnumpy()`.
+- `xp.on_device(i)` is always a context manager. On GPU, `i` in `0 .. n_gpus-1` selects that CUDA device (also with a single GPU) and `-1` runs the block on the CPU; out-of-range values raise `ValueError`. On CPU it is a no-op for any `i`.
+- `xp.set_device(i)` sets the current CUDA device (setting the current one is a silent no-op, an invalid id raises `ValueError`); it is a no-op on CPU.
+- Banners and switch messages go to the `xupy` logger instead of `print`. To see them:
+
+```python
+import logging
+logging.basicConfig(level=logging.INFO)
+```
+
 ## Performance Benefits
 
 XuPy automatically detects GPU availability and provides significant speedup for large arrays:

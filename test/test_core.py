@@ -94,14 +94,30 @@ class TestDeviceManagement:
         else:
             assert on_gpu == False
 
+    @requires_gpu
     def test_set_device_single_gpu(self):
-        """Test set_device with single GPU (should raise error)."""
-        if HAS_CUPY:
-            n_gpus = cp.cuda.runtime.getDeviceCount()
+        """set_device(current) is a silent no-op (no exception, no warning)."""
+        import warnings
+
+        n_gpus = cp.cuda.runtime.getDeviceCount()
+        before = cp.cuda.runtime.getDevice()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            xp.set_device(before)
             if n_gpus == 1:
-                # Should raise RuntimeError when trying to set device on single GPU system
-                with pytest.raises(RuntimeError, match="Only one GPU available"):
-                    xp.set_device(0)
+                xp.set_device(0)
+        assert cp.cuda.runtime.getDevice() == before
+
+    @requires_gpu
+    def test_set_device_out_of_range(self):
+        """An invalid device id raises ValueError and leaves the device alone."""
+        n_gpus = cp.cuda.runtime.getDeviceCount()
+        before = cp.cuda.runtime.getDevice()
+        with pytest.raises(ValueError):
+            xp.set_device(n_gpus)
+        with pytest.raises(ValueError):
+            xp.set_device(-1)
+        assert cp.cuda.runtime.getDevice() == before
 
     def test_set_device_multiple_gpus(self):
         """Test set_device with multiple GPUs."""
@@ -119,19 +135,16 @@ class TestDeviceManagement:
                     # If device 1 doesn't exist or can't be set, that's okay
                     pass
 
+    @requires_gpu
     def test_set_device_already_set(self):
-        """Test set_device when device is already set."""
-        if HAS_CUPY:
-            current_device = cp.cuda.runtime.getDevice()
-            n_gpus = cp.cuda.runtime.getDeviceCount()
-            if n_gpus > 1:
-                # Should warn when setting to same device (only if multiple GPUs)
-                with pytest.warns(UserWarning, match="already the current device"):
-                    xp.set_device(current_device)
-            else:
-                # Single GPU should raise RuntimeError
-                with pytest.raises(RuntimeError):
-                    xp.set_device(current_device)
+        """Setting the already-current device neither raises nor warns."""
+        import warnings
+
+        current_device = cp.cuda.runtime.getDevice()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            xp.set_device(current_device)
+        assert cp.cuda.runtime.getDevice() == current_device
 
 
 class TestTypeAliases:
@@ -156,10 +169,10 @@ class TestTypeAliases:
         assert xp.cdouble == (cp.complex128 if on_gpu else np.complex128)
         assert np.dtype(xp.cdouble) == np.complex128
 
-    @requires_gpu  # `xp.np` is only defined in GPU mode (see _core._gpu_definitions)
     def test_np_reference(self):
-        """Test that np reference points to NumPy."""
+        """Test that np / npma references point to NumPy in both modes."""
         assert xp.np is np
+        assert xp.npma is np.ma
         assert xp.np.array([1, 2, 3]) is not None
 
 

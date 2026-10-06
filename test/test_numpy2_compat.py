@@ -1,4 +1,5 @@
 """NumPy 2 compatibility tests for xupy.ma (average axis errors, __array__ protocol)."""
+import sys
 import warnings
 
 import numpy as np
@@ -6,7 +7,9 @@ import pytest
 from numpy.exceptions import AxisError
 
 import xupy as xp
-from xupy import ma
+import xupy.ma  # noqa: F401  (ensures XuPy's ma is loaded)
+
+ma = sys.modules["xupy.ma"]
 from xupy.ma.extras import average
 
 on_gpu = xp.on_gpu
@@ -23,7 +26,10 @@ def _make(dtype=None):
 
 class TestAverageAxisError:
     def test_exported_in_ma(self):
-        assert ma.average is average
+        import sys
+
+        assert sys.modules["xupy.ma"].average is average
+        assert sys.modules["xupy.ma"].extras.average is average
 
     @pytest.mark.parametrize("axis", [5, -3, 2, -10])
     def test_out_of_range_axis(self, axis):
