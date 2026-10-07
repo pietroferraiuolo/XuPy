@@ -520,13 +520,18 @@ class TestOnDevice:
 
 class TestLogging:
     @requires_gpu
-    def test_no_stdout_and_log_records(self, capsys, caplog):
+    def test_switch_prints_and_logs(self, capsys, caplog):
         xp.use_gpu()
+        capsys.readouterr()
         with caplog.at_level(logging.INFO, logger="xupy"):
             xp.use_cpu()
             xp.use_gpu()
         out = capsys.readouterr()
-        assert out.out == "" and out.err == ""
+        assert out.out.splitlines() == [
+            "[XuPy] Switched to CPU (NumPy).",
+            "[XuPy] Switched to GPU (CuPy).",
+        ]
+        assert out.err == ""
         recs = [r for r in caplog.records if r.name == "xupy"]
         assert len(recs) == 2
         assert "CPU" in recs[0].getMessage()
@@ -534,15 +539,18 @@ class TestLogging:
         assert all(r.levelno == logging.INFO for r in recs)
 
     @requires_gpu
-    def test_idempotent_calls_do_not_log(self, caplog):
+    def test_idempotent_calls_do_not_log(self, capsys, caplog):
         xp.use_gpu()
+        capsys.readouterr()
         with caplog.at_level(logging.INFO, logger="xupy"):
             xp.use_gpu()
             xp.use_gpu()
         assert not [r for r in caplog.records if r.name == "xupy"]
+        assert capsys.readouterr().out == ""
 
     def test_use_cpu_logs_once(self, capsys, caplog):
         xp.use_cpu()
+        capsys.readouterr()  # the first call may print a real switch
         with caplog.at_level(logging.INFO, logger="xupy"):
             xp.use_cpu()
         assert not caplog.records
@@ -559,7 +567,7 @@ class TestLogging:
         assert not [h for h in lg.handlers if isinstance(h, logging.StreamHandler)
                     and not isinstance(h, logging.NullHandler)]
 
-    def test_import_is_silent(self):
+    def test_import_prints_only_the_gpu_banner(self):
         import subprocess
         import sys
 
@@ -568,4 +576,9 @@ class TestLogging:
             env={**__import__("os").environ, "XUPY_NO_GPU_WARNING": "1"}, timeout=120,
         )
         assert r.returncode == 0
-        assert r.stdout == ""
+        if GPU_OK:
+            assert r.stdout.startswith("[XuPy] ")
+            assert "Using CuPy" in r.stdout
+            assert "Switched" not in r.stdout
+        else:
+            assert r.stdout == ""

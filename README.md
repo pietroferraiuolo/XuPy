@@ -83,12 +83,7 @@ xp.on_gpu                    # live: reflects the active backend
 - NumPy 2 names CuPy lacks are shimmed on GPU (`vecdot`, `unstack`, `sort(stable=, descending=)`, `unique(sorted=)`, `errstate`, `linalg.vector_norm`, ...). Host-only names with no CuPy equivalent (`emath`, `strings`, `char`, `rec`, ...) raise an `AttributeError` that points to `xp.backend("cpu")` / `xp.asnumpy()`.
 - `xp.on_device(i)` is always a context manager. On GPU, `i` in `0 .. n_gpus-1` selects that CUDA device (also with a single GPU) and `-1` runs the block on the CPU; out-of-range values raise `ValueError`. On CPU it is a no-op for any `i`.
 - `xp.set_device(i)` sets the current CUDA device (setting the current one is a silent no-op, an invalid id raises `ValueError`); it is a no-op on CPU.
-- Banners and switch messages go to the `xupy` logger instead of `print`. To see them:
-
-```python
-import logging
-logging.basicConfig(level=logging.INFO)
-```
+- The GPU banner (on import) and switch messages (when `use_cpu()`/`use_gpu()` actually change the backend) are printed to stdout and also emitted on the `xupy` logger at INFO level; `xp.backend(...)` scopes are silent.
 
 ## Performance Benefits
 
