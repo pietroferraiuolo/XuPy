@@ -68,7 +68,7 @@ def _warn_gpu_unusable(reason: str, cupy_importable: bool = False) -> None:
         frame = frame.f_back
         level += 1
     _warnings.warn(
-        f"[XuPy] NVIDIA GPU detected but CuPy is not usable ({reason}); using NumPy. "
+        f"[XuPy] NVIDIA GPU detected but CuPy is not usable ({reason}); using NumPy.\n"
         "Install with: pip install xupy[cuda12] / xupy[cuda13], or: "
         "python -m xupy.install_cupy. Silence with XUPY_NO_GPU_WARNING=1.",
         UserWarning,
@@ -122,6 +122,7 @@ if _cupy_err is None:
     _GPU_AVAILABLE = True
     _MULTIGPU = _n_gpus > 1
     _log.info(_banner)
+    print(_banner)
     del _banner
 else:
     _reason = (str(_cupy_err).strip().splitlines() or [""])[0]
@@ -911,6 +912,7 @@ def use_cpu() -> None:
         changed, _global_gpu = _global_gpu, False
     if changed:
         _log.info("[XuPy] Switched to CPU (NumPy).")
+        print("[XuPy] Switched to CPU (NumPy).")
 
 
 def use_gpu() -> None:
@@ -932,6 +934,7 @@ def use_gpu() -> None:
         changed, _global_gpu = not _global_gpu, True
     if changed:
         _log.info("[XuPy] Switched to GPU (CuPy).")
+        print("[XuPy] Switched to GPU (CuPy).")
 
 
 @_contextmanager
