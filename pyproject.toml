@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "XuPy"
-version = "1.7.3"
+dynamic = ["version"]
 description = "GPU Accelerated masked arrays with automatic handling of CPU and GPU arrays."
 authors = [
     { name = "Pietro Ferraiuolo", email = "pietro.ferraiuolo@inaf.it" }
@@ -13,12 +13,29 @@ license = "MIT"
 license-files = ["LICEN[CS]E*"]
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = [
-    'numpy',
-]
+dependencies = ["numpy>=2.0"]
+
+[project.optional-dependencies]
+cuda12 = ["cupy-cuda12x>=14"]
+cuda13 = ["cupy-cuda13x>=14"]
+array-api = ["array-api-compat>=1.11"]
+test = ["pytest", "psutil"]
+
+[project.scripts]
+xupy-install-cupy = "xupy.install_cupy:main"
 
 [project.urls]
 Homepage = "https://github.com/pietroferraiuolo/XuPy"
 
 [tool.setuptools]
-packages = ["xupy", "xupy._cupy_install", "xupy.ma"]
+packages = ["xupy", "xupy.ma"]
+
+[tool.setuptools.package-data]
+xupy = ["py.typed"]
+
+[tool.setuptools.dynamic]
+version = {attr = "xupy.__version__.__version__"}
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+markers = ["slow: allocates very large arrays (deselect with -m 'not slow')"]

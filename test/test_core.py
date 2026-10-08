@@ -14,21 +14,21 @@ from typing import Any
 
 try:
     import cupy as cp
-    HAS_CUPY = True
 except ImportError:
-    HAS_CUPY = False
+    cp = None
 
 import xupy as xp
 from xupy._core import NumpyContext, _CPUMemoryContext, on_gpu
 
-# Skip all tests if CuPy is not available
-pytestmark = pytest.mark.skipif(not HAS_CUPY, reason="CuPy not available")
+# CuPy may be importable while XuPy runs on CPU: GPU-only tests depend on XuPy's mode.
+HAS_CUPY = bool(on_gpu)
+requires_gpu = pytest.mark.skipif(not on_gpu, reason="XuPy is not running on GPU")
 
 
 # Helper functions
 def _to_numpy(arr: Any) -> np.ndarray:
     """Convert any array to NumPy array."""
-    if hasattr(arr, "get"):
+    if cp is not None and hasattr(arr, "get"):
         return cp.asnumpy(arr)
     return np.asarray(arr)
 
@@ -43,7 +43,7 @@ class TestNumpyContext:
             # Should be able to create NumPy arrays
             arr = np.array([1, 2, 3])
             assert isinstance(arr, np.ndarray)
-            assert not isinstance(arr, cp.ndarray)
+            assert cp is None or not isinstance(arr, cp.ndarray)
 
     def test_numpy_context_inside(self):
         """Test that inside context, np refers to NumPy."""
@@ -83,10 +83,10 @@ class TestNumpyContext:
                 assert isinstance(arr2, np.ndarray)
 
 
+@requires_gpu
 class TestDeviceManagement:
     """Test device management functions."""
 
-    @pytest.mark.skipif(not HAS_CUPY, reason="CuPy required")
     def test_on_gpu_flag(self):
         """Test that on_gpu flag is set correctly."""
         if HAS_CUPY:
@@ -94,17 +94,31 @@ class TestDeviceManagement:
         else:
             assert on_gpu == False
 
-    @pytest.mark.skipif(not HAS_CUPY, reason="CuPy required")
+    @requires_gpu
     def test_set_device_single_gpu(self):
-        """Test set_device with single GPU (should raise error)."""
-        if HAS_CUPY:
-            n_gpus = cp.cuda.runtime.getDeviceCount()
-            if n_gpus == 1:
-                # Should raise RuntimeError when trying to set device on single GPU system
-                with pytest.raises(RuntimeError, match="Only one GPU available"):
-                    xp.set_device(0)
+        """set_device(current) is a silent no-op (no exception, no warning)."""
+        import warnings
 
-    @pytest.mark.skipif(not HAS_CUPY, reason="CuPy required")
+        n_gpus = cp.cuda.runtime.getDeviceCount()
+        before = cp.cuda.runtime.getDevice()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            xp.set_device(before)
+            if n_gpus == 1:
+                xp.set_device(0)
+        assert cp.cuda.runtime.getDevice() == before
+
+    @requires_gpu
+    def test_set_device_out_of_range(self):
+        """An invalid device id raises ValueError and leaves the device alone."""
+        n_gpus = cp.cuda.runtime.getDeviceCount()
+        before = cp.cuda.runtime.getDevice()
+        with pytest.raises(ValueError):
+            xp.set_device(n_gpus)
+        with pytest.raises(ValueError):
+            xp.set_device(-1)
+        assert cp.cuda.runtime.getDevice() == before
+
     def test_set_device_multiple_gpus(self):
         """Test set_device with multiple GPUs."""
         if HAS_CUPY:
@@ -121,52 +135,50 @@ class TestDeviceManagement:
                     # If device 1 doesn't exist or can't be set, that's okay
                     pass
 
-    @pytest.mark.skipif(not HAS_CUPY, reason="CuPy required")
+    @requires_gpu
     def test_set_device_already_set(self):
-        """Test set_device when device is already set."""
-        if HAS_CUPY:
-            current_device = cp.cuda.runtime.getDevice()
-            n_gpus = cp.cuda.runtime.getDeviceCount()
-            if n_gpus > 1:
-                # Should warn when setting to same device (only if multiple GPUs)
-                with pytest.warns(UserWarning, match="already the current device"):
-                    xp.set_device(current_device)
-            else:
-                # Single GPU should raise RuntimeError
-                with pytest.raises(RuntimeError):
-                    xp.set_device(current_device)
+        """Setting the already-current device neither raises nor warns."""
+        import warnings
+
+        current_device = cp.cuda.runtime.getDevice()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            xp.set_device(current_device)
+        assert cp.cuda.runtime.getDevice() == current_device
 
 
 class TestTypeAliases:
     """Test type aliases."""
 
-    @pytest.mark.skipif(not HAS_CUPY, reason="CuPy required")
-    def test_float_alias(self):
-        """Test float type alias."""
-        if on_gpu:
-            assert xp.float == cp.float32
-        else:
-            assert xp.float == np.float32
+    def test_float_alias_removed(self):
+        """The legacy `float` alias no longer exists in either mode."""
+        assert not hasattr(xp, "float")
 
-    @pytest.mark.skipif(not HAS_CUPY, reason="CuPy required")
+    def test_cfloat_alias(self):
+        """`cfloat` is gone on CPU; it may still leak from CuPy on GPU."""
+        if not on_gpu:
+            assert not hasattr(xp, "cfloat")
+
     def test_double_alias(self):
-        """Test double type alias."""
-        if on_gpu:
-            assert xp.double == cp.float64
-        else:
-            assert xp.double == np.float64
+        """double is the backend float64."""
+        assert xp.double == (cp.float64 if on_gpu else np.float64)
+        assert np.dtype(xp.double) == np.float64
 
-    @pytest.mark.skipif(not HAS_CUPY, reason="CuPy required")
+    def test_cdouble_alias(self):
+        """cdouble is the backend complex128."""
+        assert xp.cdouble == (cp.complex128 if on_gpu else np.complex128)
+        assert np.dtype(xp.cdouble) == np.complex128
+
     def test_np_reference(self):
-        """Test that np reference points to NumPy."""
+        """Test that np / npma references point to NumPy in both modes."""
         assert xp.np is np
+        assert xp.npma is np.ma
         assert xp.np.array([1, 2, 3]) is not None
 
 
 class TestBasicFunctionality:
     """Test basic XuPy functionality."""
 
-    @pytest.mark.skipif(not HAS_CUPY, reason="CuPy required")
     def test_array_creation(self):
         """Test basic array creation."""
         arr = xp.array([1, 2, 3])
@@ -176,7 +188,6 @@ class TestBasicFunctionality:
         else:
             assert isinstance(arr, np.ndarray)
 
-    @pytest.mark.skipif(not HAS_CUPY, reason="CuPy required")
     def test_array_operations(self):
         """Test basic array operations."""
         arr1 = xp.array([1, 2, 3])
@@ -185,13 +196,11 @@ class TestBasicFunctionality:
         assert result is not None
         np.testing.assert_array_equal(_to_numpy(result), np.array([5, 7, 9]))
 
-    @pytest.mark.skipif(not HAS_CUPY, reason="CuPy required")
     def test_array_dtype(self):
         """Test array dtype handling."""
         arr = xp.array([1, 2, 3], dtype=xp.float32)
         assert arr.dtype == (cp.float32 if on_gpu else np.float32)
 
-    @pytest.mark.skipif(not HAS_CUPY, reason="CuPy required")
     def test_zeros_ones(self):
         """Test zeros and ones functions."""
         zeros_arr = xp.zeros((3, 3))
@@ -202,14 +211,12 @@ class TestBasicFunctionality:
         np.testing.assert_array_equal(_to_numpy(zeros_arr), np.zeros((3, 3)))
         np.testing.assert_array_equal(_to_numpy(ones_arr), np.ones((3, 3)))
 
-    @pytest.mark.skipif(not HAS_CUPY, reason="CuPy required")
     def test_arange(self):
         """Test arange function."""
         arr = xp.arange(10)
         expected = np.arange(10)
         np.testing.assert_array_equal(_to_numpy(arr), expected)
 
-    @pytest.mark.skipif(not HAS_CUPY, reason="CuPy required")
     def test_linspace(self):
         """Test linspace function."""
         arr = xp.linspace(0, 1, 5)
@@ -220,7 +227,6 @@ class TestBasicFunctionality:
 class TestMemoryContext:
     """Test MemoryContext manager."""
 
-    @pytest.mark.skipif(not HAS_CUPY, reason="CuPy required")
     def test_memory_context_basic(self):
         """Test basic MemoryContext usage."""
         if on_gpu and hasattr(xp, 'MemoryContext'):
@@ -229,7 +235,6 @@ class TestMemoryContext:
                 arr = xp.array([1, 2, 3])
                 assert arr is not None
 
-    @pytest.mark.skipif(not HAS_CUPY, reason="CuPy required")
     def test_memory_context_cleanup(self):
         """Test that MemoryContext cleans up properly."""
         if on_gpu and hasattr(xp, 'MemoryContext'):
@@ -247,7 +252,7 @@ class TestMemoryContext:
 class TestGPUDetection:
     """Test GPU detection and availability."""
 
-    @pytest.mark.skipif(not HAS_CUPY, reason="CuPy required")
+    @requires_gpu
     def test_gpu_available(self):
         """Test that GPU is detected if available."""
         if HAS_CUPY:
@@ -257,7 +262,6 @@ class TestGPUDetection:
             if on_gpu:
                 assert cp.cuda.runtime.getDeviceCount() > 0
 
-    @pytest.mark.skipif(not HAS_CUPY, reason="CuPy required")
     def test_cupy_import(self):
         """Test that CuPy functions are available."""
         if on_gpu:
@@ -270,7 +274,6 @@ class TestGPUDetection:
 class TestIntegration:
     """Test integration aspects."""
 
-    @pytest.mark.skipif(not HAS_CUPY, reason="CuPy required")
     def test_numpy_compatibility(self):
         """Test compatibility with NumPy operations."""
         xp_arr = xp.array([1, 2, 3, 4, 5])
@@ -280,7 +283,6 @@ class TestIntegration:
         converted = _to_numpy(xp_arr)
         np.testing.assert_array_equal(converted, np_arr)
 
-    @pytest.mark.skipif(not HAS_CUPY, reason="CuPy required")
     def test_array_conversion(self):
         """Test array conversion between NumPy and CuPy."""
         np_arr = np.array([1, 2, 3])

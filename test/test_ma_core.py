@@ -17,15 +17,19 @@ from typing import Any
 
 try:
     import cupy as cp
-    HAS_CUPY = True
 except ImportError:
-    HAS_CUPY = False
+    cp = None
+
+import xupy as _xupy_mod
+
+# CuPy may be importable while XuPy runs on CPU: skip unless XuPy is on GPU.
+HAS_CUPY = bool(_xupy_mod.on_gpu)
 
 from xupy.ma import masked_array, MaskedArray, nomask, masked
 from xupy.ma.core import _XupyMaskedArray
 
-# Skip all tests if CuPy is not available
-pytestmark = pytest.mark.skipif(not HAS_CUPY, reason="CuPy not available")
+# Skip all tests if XuPy is not running on GPU
+pytestmark = pytest.mark.skipif(not HAS_CUPY, reason="XuPy is not running on GPU")
 
 
 # Helper functions

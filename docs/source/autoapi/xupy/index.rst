@@ -17,7 +17,6 @@ Submodules
 
    /autoapi/xupy/__version__/index
    /autoapi/xupy/_core/index
-   /autoapi/xupy/_cupy_install/index
    /autoapi/xupy/_typings/index
 
 

@@ -2,85 +2,151 @@
 XUPY Core Module
 ================
 
-This module is the core of XuPy, it contains the functions and classes that are used to create the XuPy library.
+Backend manager of XuPy.  The public namespace (``xupy`` and ``xupy._core``)
+is *not* stored in module globals: it is resolved on every attribute access
+(PEP 562) against the table of the active backend, so that
 
+* ``use_cpu()`` / ``use_gpu()`` only flip one flag (thread-safe, nothing is
+  popped or re-added);
+* ``with backend("cpu"):`` gives a thread- and asyncio-local override
+  (``contextvars``);
+* the namespace follows NumPy 2.x on both backends: it is built from
+  ``numpy.__all__``, names removed in NumPy 2 never resolve, and GPU-mode
+  gaps are filled by shims (see ``xupy._shims``).
 """
 
 import numpy as _np
+import os as _os
+import shutil as _shutil
 import time as _time
 import builtins as _b
 import sys as _sys
+import logging as _logging
+import threading as _threading
+import warnings as _warnings
+from contextvars import ContextVar as _ContextVar
 from . import typings as _t
 from contextlib import contextmanager as _contextmanager
-from ._cupy_install import __check_availability__ as __check__
 
-_GPU = False
+__all__ = ["use_cpu", "use_gpu", "backend", "NumpyContext"]
+
+_log = _logging.getLogger("xupy")
+
+_B2mb_ = 1024 * 1000  # using MB = 1,000,000 bytes
+_Btgb_ = 1024 * 1000 * 1000  # using GB = 1,000,000,000 bytes
+
 _GPU_AVAILABLE = False
 _MULTIGPU = False
+_n_gpus = 0
+_cuda_version = None
+_xp = _np  # cupy when usable, numpy otherwise (used by the GPU MemoryContext)
+_cupy = None  # cupy module when usable, else None
 
-__check__.xupy_init()
-__cuda_version__ = __check__.get_cuda_version()
 
-del __check__
+def _nvidia_gpu_present() -> bool:
+    """Heuristic: True if an NVIDIA driver tool is on PATH (no subprocess is run)."""
+    return _shutil.which("nvidia-smi") is not None
 
-try:
-    import cupy as _xp # type: ignore
 
-    _B2mb_ = 1024 * 1000  # using MB = 1,000,000 bytes
-    _Btgb_ = 1024 * 1000 * 1000  # using GB = 1,000,000,000 bytes
-    n_gpus = _xp.cuda.runtime.getDeviceCount()
-    if n_gpus > 1:
-        _MULTIGPU = True
-        gpus = {}
-        line1 = """
-[XuPy] Multiple GPUs detected:
-"""
-        for g in range(n_gpus):
-            gpu = _xp.cuda.runtime.getDeviceProperties(g)
-            gpu_name = gpu["name"].decode()
-            gpus[g] = gpu_name
-            line1 += f"       - gpu_id {g} : {gpu_name} | Memory = {gpu['totalGlobalMem'] / _B2mb_:.2f} MB | Compute Capability = {gpu['major']}.{gpu['minor']}\n"
-    else:
-        gpu = _xp.cuda.runtime.getDeviceProperties(0)
-        gpu_name = gpu["name"].decode()
-        line1 = f"[XuPy] Device {_xp.cuda.runtime.getDevice()} available - GPU : `{gpu_name}`\n"
-        line1 += f"       Memory = {_xp.cuda.runtime.getDeviceProperties(0)['totalGlobalMem'] / _B2mb_:.2f} MB | Compute Capability = {_xp.cuda.runtime.getDeviceProperties(0)['major']}.{_xp.cuda.runtime.getDeviceProperties(0)['minor']}\n"
-    print(
-        f"""
-{line1}       Using CuPy {_xp.__version__} for acceleration."""
+def _warn_gpu_unusable(reason: str, cupy_importable: bool = False) -> None:
+    """Emit a single UserWarning when an NVIDIA GPU seems present but CuPy is unusable."""
+    flag = _os.environ.get("XUPY_NO_GPU_WARNING", "").strip().lower()
+    if flag not in ("", "0", "false", "no"):
+        return
+    if not (cupy_importable or _nvidia_gpu_present()):
+        return
+    # Point at the first frame outside the xupy package.
+    pkg_dir = _os.path.dirname(_os.path.abspath(__file__))
+    level, frame = 1, _sys._getframe(0)
+    while frame is not None:
+        fname = _os.path.abspath(frame.f_code.co_filename)
+        if "importlib" in fname and "_bootstrap" in fname:
+            frame = frame.f_back  # the warnings module skips these frames itself
+            continue
+        if not fname.startswith(pkg_dir + _os.sep):
+            break
+        frame = frame.f_back
+        level += 1
+    _warnings.warn(
+        f"[XuPy] NVIDIA GPU detected but CuPy is not usable ({reason}); using NumPy.\n"
+        "Install with: pip install xupy[cuda12] / xupy[cuda13], or: "
+        "python -m xupy.install_cupy. Silence with XUPY_NO_GPU_WARNING=1.",
+        UserWarning,
+        stacklevel=level,
     )
 
-    # Test cupy is working on the system
-    import gc
 
-    a = _xp.array([1, 2, 3])  # test array
-    del a  # cleanup
-    gc.collect()
-    _GPU = True
+
+
+def _gpu_banner(cp, n: int) -> str:
+    """Human-readable description of the detected GPU(s)."""
+    if n > 1:
+        lines = ["[XuPy] Multiple GPUs detected:"]
+        for g in range(n):
+            p = cp.cuda.runtime.getDeviceProperties(g)
+            lines.append(
+                f"       - gpu_id {g} : {p['name'].decode()} | Memory = {p['totalGlobalMem'] / _B2mb_:.2f} MB"
+                f" | Compute Capability = {p['major']}.{p['minor']}"
+            )
+    else:
+        p = cp.cuda.runtime.getDeviceProperties(0)
+        lines = [
+            f"[XuPy] Device {cp.cuda.runtime.getDevice()} available - GPU : `{p['name'].decode()}`",
+            f"       Memory = {p['totalGlobalMem'] / _B2mb_:.2f} MB | Compute Capability = {p['major']}.{p['minor']}",
+        ]
+    lines.append(f"       Using CuPy {cp.__version__} for acceleration.")
+    return "\n".join(lines)
+
+
+_cupy_err = None
+_cupy_importable = False
+try:
+    import cupy as _cp_mod  # type: ignore
+
+    _cupy_importable = True
+    # Prove that kernels compile and run, not just that memory can be allocated.
+    if int((_cp_mod.arange(4) + 1).sum().item()) != 10:
+        raise RuntimeError("CuPy kernel sanity check returned a wrong result")
+    _cuda_version = (
+        lambda v: f"{v // 1000}.{(v % 1000) // 10}"
+    )(_cp_mod.cuda.runtime.runtimeGetVersion())
+    _n_gpus = _cp_mod.cuda.runtime.getDeviceCount()
+    _banner = _gpu_banner(_cp_mod, _n_gpus)
+except Exception as err:  # any cupy failure means CPU fallback
+    _cupy_err = err
+    _cuda_version = None
+    _n_gpus = 0
+
+if _cupy_err is None:
+    _cupy = _xp = _cp_mod
     _GPU_AVAILABLE = True
-    from cupy import *  # type: ignore
+    _MULTIGPU = _n_gpus > 1
+    _log.info(_banner)
+    print(_banner)
+    del _banner
+else:
+    _reason = (str(_cupy_err).strip().splitlines() or [""])[0]
+    _reason = f"{type(_cupy_err).__name__}: {_reason}" if _reason else type(_cupy_err).__name__
+    if len(_reason) > 120:
+        _reason = _reason[:117] + "..."
+    _warn_gpu_unusable(_reason, cupy_importable=_cupy_importable)
 
-except Exception as err:
-    if not __cuda_version__ is None:
-        print(
-            f"""
-[XuPy] GPU Acceleration unavailable.
-       Using CPU (NumPy)."""
-        )
-    _GPU = False
-    _GPU_AVAILABLE = False
-    from numpy import *  # type: ignore
+# ---------------------------------------------------------------------------
+# Backend state
+# ---------------------------------------------------------------------------
+# `_global_gpu` is the process-wide default (mutated only under `_lock`);
+# `_backend_var` is a per-context override (None / True / False).
 
-on_gpu = _GPU
-has_multi_gpu = _MULTIGPU
+_global_gpu: bool = _GPU_AVAILABLE
+_lock = _threading.Lock()
+_backend_var: _ContextVar = _ContextVar("xupy_backend", default=None)
 
-# Capture the set of names brought in by the wildcard import
-_backend_names = frozenset(
-    getattr(_xp if _GPU_AVAILABLE else _np, '__all__',
-            [n for n in dir(_xp if _GPU_AVAILABLE else _np) if not n.startswith('_')])
-)
 
-_mode_names: set[str] = set()
+def _active_gpu() -> bool:
+    """True if the backend active in the current context is the GPU."""
+    o = _backend_var.get()
+    return _global_gpu if o is None else o
+
 
 def _array_size(
     shape: tuple[int] | list[tuple[int]],
@@ -145,7 +211,7 @@ class NumpyContext:
     """
 
     def __init__(self):
-        if _GPU:
+        if _active_gpu():
             self.original_device = _xp.cuda.runtime.getDevice()
         else:
             self.original_device = None
@@ -160,7 +226,7 @@ class NumpyContext:
 
     def __repr__(self) -> str:
         """String representation of the context manager."""
-        if _GPU:
+        if _active_gpu():
 
             return f"NumpyContext(original_device={self.original_device})"
         else:
@@ -304,194 +370,8 @@ class _CPUMemoryContext:
 # GPU-only definitions (only created when CuPy was successfully loaded)
 # ---------------------------------------------------------------------------
 
+
 if _GPU_AVAILABLE:
-    
-    def _allocate_with_fallback_device(
-        array: _t.ArrayLike,
-        dtype: _t.Optional[_t.DTypeLike] = None,
-        preferred_device: _t.Optional[int] = None,
-        safety_factor: float = 1.10,
-        reserve_mb: int = 128,
-        ) -> tuple[_t.NDArray[_t.Any], int]:
-        """
-        Allocate an array on the current/preferred GPU if enough memory is available.
-        If not, try other GPUs when multi-GPU is available.
-        
-        Parameters
-        ----------
-        array : ArrayLike
-            Input data to allocate on GPU.
-        dtype : DTypeLike, optional
-            Target dtype for allocation. If None, uses input dtype when available.
-        preferred_device : int, optional
-            Device to try first. If None, uses current CUDA device.
-        safety_factor : float, optional
-            Extra multiplicative margin on top of estimated size.
-        reserve_mb : int, optional
-            Additional fixed memory cushion to reduce OOM risk.
-
-        Returns
-        -------
-        gpu_array : NDArray
-            Allocated array on the selected GPU.
-        device_id : int
-            GPU id where the allocation was performed.
-
-        Raises
-        ------
-        RuntimeError
-            If GPU backend is not available.
-        MemoryError
-            If no device has enough free memory.
-        """
-        if not _GPU_AVAILABLE:
-            raise RuntimeError("[XuPy] GPU backend is not available.")
-
-        # Keep behavior explicit: this helper is for GPU allocation.
-        if not on_gpu:
-            raise RuntimeError("[XuPy] XuPy is in CPU mode. Call use_gpu() first.")
-
-        # Resolve dtype used for memory estimate and allocation.
-        target_dtype = dtype if dtype is not None else getattr(array, "dtype", _xp.float32)
-
-        # Estimate required memory in MB using existing XuPy helper.
-        shape = getattr(array, "shape", None)
-        if shape is None:
-            arr_np = _np.asarray(array, dtype=target_dtype)
-            shape = arr_np.shape
-        required_mb = _array_size(tuple(shape), dtype=target_dtype, out_unit="MB")
-        required_mb = int(required_mb * safety_factor) + int(reserve_mb)
-
-        current_device = _get_device()
-        first_device = current_device if preferred_device is None else int(preferred_device)
-
-        # Device probe order: preferred/current first, then the others.
-        device_order = [first_device]
-        if has_multi_gpu:
-            device_order.extend([d for d in range(n_gpus) if d != first_device])
-
-        for dev_id in device_order:
-            try:
-                with _on_device(dev_id):
-                    free_b, _ = _xp.cuda.runtime.memGetInfo()
-                    free_mb = int(free_b / _B2mb_)
-
-                if free_mb >= required_mb:
-                    with _on_device(dev_id):
-                        gpu_array = _xp.asarray(array, dtype=target_dtype)
-                    return gpu_array, dev_id
-            except Exception:
-                # Skip unavailable/busy devices and continue probing.
-                continue
-
-        raise MemoryError(
-            f"[XuPy] Cannot allocate array (~{required_mb} MB incl. margin) "
-            f"on probed devices {device_order}."
-        )
-
-
-    @_contextmanager
-    def _on_device(device_id: int):
-        """
-        Context manager to temporarily set the CUDA device for computations (cupy).
-
-        Parameters
-        ----------
-        device_id : int
-            The ID of the CUDA device to set as default within the context.
-            
-            If ``-1`` is passed, it will switch to CPU mode within the context 
-            and restore GPU mode on exit.
-
-        Raises
-        ------
-        RuntimeError : If the device cannot be set or if the device is already 
-            the current device.
-
-        Examples
-        --------
-        .. code-block:: python
-            with xp.on_device(0):
-                # computations here will use device 0
-                array = xp.array([1,2,3]) # array allocated on GPU 0
-            with xp.on_device(1):
-                # computations here will use device 1
-                array = xp.array([4,5,6]) # array allocated on GPU 1
-            with xp.on_device(-1):
-                # computations here will use CPU
-                array = xp.array([7,8,9]) # array allocated on CPU
-        """
-        original_device = _xp.cuda.runtime.getDevice()
-        try:
-            if device_id == -1:
-                use_cpu()
-            else:
-                _set_device(device_id)
-            yield
-        finally:
-            # Restore original device
-            try:
-                if device_id == -1:
-                    use_gpu()
-                _xp.cuda.runtime.setDevice(original_device)
-            except Exception as e:
-                print(f"Warning: Could not restore original device: {e}")
-    
-
-    def _set_device(device_id: int) -> None:
-        """
-        Sets the default CUDA device for computations (cupy).
-
-        Parameters
-        ----------
-        device_id : int
-            The ID of the CUDA device to set as default.
-
-        Raises
-        ------
-        RuntimeError : If the device cannot be set or if the device is already the current device.
-
-        Examples
-        --------
-        >>> xp.set_device(0)
-        >>> xp.set_device(1)
-        """
-        import warnings
-
-        if not _xp.cuda.runtime.getDevice() == device_id and n_gpus > 1:
-            try:
-                _xp.cuda.runtime.setDevice(device_id)
-                print(f"[XuPy] Set device to {device_id} : {gpus[device_id]}")
-            except Exception as e:
-                raise RuntimeError(f"[XuPy] Failed to set device to {device_id} : {e}")
-        elif _xp.cuda.runtime.getDevice() == device_id and n_gpus == 1:
-            raise RuntimeError(f"[XuPy] Only one GPU available")
-        else:
-            warnings.warn(
-                f"[XuPy] Device {device_id} is already the current device", UserWarning
-            )
-    
-    def _get_device() -> int:
-        """
-        Get the current CUDA device ID.
-
-        Returns
-        -------
-        int
-            The ID of the current CUDA device.
-
-        Raises
-        ------
-        RuntimeError : If the GPU backend is not available.
-
-        Examples
-        --------
-        >>> current_device = xp.get_device()
-        >>> print(f"Current device ID: {current_device}")
-        """
-        if not _GPU_AVAILABLE:
-            return -1  # Indicate no GPU available
-        return int(_xp.cuda.runtime.getDevice())
 
     # --- GPU Memory Management Context Manager ---
     class _MemoryContext:
@@ -554,7 +434,7 @@ if _GPU_AVAILABLE:
             """Enter the memory context."""
             self._start_time = _time.time()
 
-            if _GPU:
+            if _GPU_AVAILABLE:
                 # Store original device
                 try:
                     self._original_device = _xp.cuda.runtime.getDevice()
@@ -587,7 +467,7 @@ if _GPU_AVAILABLE:
                     self._cleanup_gpu_objects()
 
                     # Restore original device
-                    if _GPU and self._device_ctx is not None:
+                    if _GPU_AVAILABLE and self._device_ctx is not None:
                         try:
                             self._device_ctx.__exit__(exc_type, exc_val, exc_tb)
                         except Exception as e:
@@ -632,7 +512,7 @@ if _GPU_AVAILABLE:
 
         def clear_cache(self):
             """Clear GPU memory pools (safely)."""
-            if not _GPU:
+            if not _GPU_AVAILABLE:
                 return
 
             try:
@@ -663,7 +543,7 @@ if _GPU_AVAILABLE:
 
         def aggressive_cleanup(self):
             """Perform aggressive memory cleanup."""
-            if not _GPU:
+            if not _GPU_AVAILABLE:
                 return
 
             if self._print_report:
@@ -745,7 +625,7 @@ if _GPU_AVAILABLE:
 
         def emergency_cleanup(self):
             """Emergency cleanup for out-of-memory situations."""
-            if not _GPU:
+            if not _GPU_AVAILABLE:
                 return
 
             print("[MemoryContext] EMERGENCY MEMORY CLEANUP")
@@ -798,7 +678,7 @@ if _GPU_AVAILABLE:
 
         def get_memory_info(self) -> dict[str, _t.Any]:
             """Get comprehensive memory information."""
-            if not _GPU:
+            if not _GPU_AVAILABLE:
                 return {"error": "No GPU available"}
 
             try:
@@ -917,7 +797,7 @@ if _GPU_AVAILABLE:
 
         def force_memory_deallocation(self):
             """Force memory deallocation by creating pressure on the memory pool."""
-            if not _GPU:
+            if not _GPU_AVAILABLE:
                 return
 
             print("[MemoryContext] Forcing memory deallocation...")
@@ -966,7 +846,7 @@ if _GPU_AVAILABLE:
 
         def force_memory_pool_reset(self):
             """Force a complete memory pool reset by creating a new pool."""
-            if not _GPU:
+            if not _GPU_AVAILABLE:
                 return
 
             if self._print_report:
@@ -1015,159 +895,6 @@ if _GPU_AVAILABLE:
             return f"MemoryContext(device={mem_info.get('device')}, memory={used_mb:.2f}/{total_mb:.2f} MB ({percent:.1f}%))"
 
 
-# ---------------------------------------------------------------------------
-# Mode-specific definition builders
-# ---------------------------------------------------------------------------
-
-def _gpu_definitions() -> dict:
-    """Return dict of names exposed only in GPU mode."""
-
-    def asmarray(array: _t.NDArray[_t.Any]) -> _t.MaskedArray:
-        """
-        Converts an object to a masked array on the GPU.
-
-        Args:
-            array: Input array-like object.
-
-        Returns:
-            cupy.ma.MaskedArray: A masked array on the GPU. If the input is already a masked array, it is returned as is.
-        """
-        try:
-            return array.asmarray()
-        except AttributeError:
-            return _np.ma.masked_array(array.data, mask=array.mask)
-
-    return {
-        'float': _xp.float32,
-        'double': _xp.float64,
-        'cfloat': _xp.complex64,
-        'cdouble': _xp.complex128,
-        'np': _np,
-        'npma': _np.ma,
-        'asmarray': asmarray,
-        'set_device': _set_device,
-        'array_size': _array_size,
-        'on_device': _on_device,
-        'MemoryContext': _MemoryContext,
-    }
-
-
-def _cpu_definitions() -> dict:
-    """Return dict of names exposed only in CPU mode."""
-    def asnumpy(array: _t.NDArray[_t.Any]) -> _t.Array:
-        """
-        Placeholder function for asnumpy when GPU is not available.
-        """
-        if isinstance(array, _np.ma.MaskedArray):
-            return array.data
-        return array
-
-    def asmarray(array: _t.NDArray[_t.Any]) -> _t.MaskedArray:
-        """
-        Placeholder function for asmarray when GPU is not available.
-        """
-        if isinstance(array, _np.ma.MaskedArray):
-            return array
-        return _np.ma.masked_array(array)
-
-    return {
-        'float': _np.float64,
-        'double': _np.float64,
-        'cfloat': _np.complex128,
-        'cdouble': _np.complex128,
-        'array_size': _array_size,
-        'asnumpy': asnumpy,
-        'asmarray': asmarray,
-        'MemoryContext': _CPUMemoryContext,
-        'on_device': lambda device_id: None,  # No-op on CPU
-    }
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers for namespace management
-# ---------------------------------------------------------------------------
-
-def _apply_mode_definitions(defs: dict) -> None:
-    """Apply mode-specific names to _core and xupy namespaces."""
-    global _mode_names
-    _core_mod = _sys.modules[__name__]
-    _pkg_mod = _sys.modules.get('xupy')
-
-    for name in _mode_names:
-        _core_mod.__dict__.pop(name, None)
-        if _pkg_mod:
-            _pkg_mod.__dict__.pop(name, None)
-
-    for name, value in defs.items():
-        _core_mod.__dict__[name] = value
-        if _pkg_mod:
-            _pkg_mod.__dict__[name] = value
-
-    _mode_names = set(defs.keys())
-
-
-def _repopulate_backend(to_gpu: bool) -> None:
-    """Swap the array-library backend and mode-specific definitions."""
-    global _GPU, on_gpu, _backend_names, _mode_names
-
-    _core_mod = _sys.modules[__name__]
-    _pkg_mod = _sys.modules.get('xupy')
-
-    new_backend = _xp if to_gpu else _np
-    new_backend_names = frozenset(
-        getattr(new_backend, '__all__',
-                [n for n in dir(new_backend) if not n.startswith('_')])
-    )
-    new_mode_defs = _gpu_definitions() if to_gpu else _cpu_definitions()
-
-    # 1. Remove ALL old managed names (backend + mode) to start clean
-    for name in (_backend_names | _mode_names):
-        _core_mod.__dict__.pop(name, None)
-        if _pkg_mod:
-            _pkg_mod.__dict__.pop(name, None)
-
-    # 2. Add new backend names
-    for name in new_backend_names:
-        obj = getattr(new_backend, name)
-        _core_mod.__dict__[name] = obj
-        if _pkg_mod:
-            _pkg_mod.__dict__[name] = obj
-
-    # 3. Layer mode-specific names on top (takes precedence over backend)
-    for name, value in new_mode_defs.items():
-        _core_mod.__dict__[name] = value
-        if _pkg_mod:
-            _pkg_mod.__dict__[name] = value
-
-    _backend_names = new_backend_names
-    _mode_names = set(new_mode_defs.keys())
-
-    _GPU = to_gpu
-    on_gpu = to_gpu
-    _core_mod.__dict__['on_gpu'] = to_gpu
-    if _pkg_mod:
-        _pkg_mod.__dict__['on_gpu'] = to_gpu
-
-        # Restore xupy subpackages (e.g. xupy.ma) that may have been
-        # overwritten or removed by the backend wildcard swap.
-        _pkg_prefix = 'xupy.'
-        for _mod_name, _mod_obj in _sys.modules.items():
-            if (_mod_name.startswith(_pkg_prefix)
-                    and '.' not in _mod_name[len(_pkg_prefix):]):
-                _pkg_mod.__dict__[_mod_name[len(_pkg_prefix):]] = _mod_obj
-
-        # On CPU, replace xupy.ma with numpy.ma so masked arrays are native
-        # numpy.ma.MaskedArray.  On GPU, the loop above already restored
-        # XuPy's custom GPU-accelerated ma module.
-        if not to_gpu:
-            _pkg_mod.__dict__['ma'] = _np.ma
-
-
-# Apply initial mode-specific definitions
-if _GPU:
-    _apply_mode_definitions(_gpu_definitions())
-else:
-    _apply_mode_definitions(_cpu_definitions())
 
 
 # ---------------------------------------------------------------------------
@@ -1175,35 +902,384 @@ else:
 # ---------------------------------------------------------------------------
 
 def use_cpu() -> None:
-    """Switch XuPy to use NumPy (CPU) as the backend.
+    """Make NumPy (CPU) the default backend, process-wide.
 
-    After calling this function, all new array operations (e.g. ``xp.array``,
-    ``xp.zeros``) will create NumPy arrays.  Existing arrays are **not**
-    converted automatically.
+    Thread-safe and idempotent.  Existing arrays are **not** converted.  Use
+    ``with backend("cpu"):`` for a scoped, thread/async-local switch instead.
     """
-    if not _GPU:
-        return
-    _repopulate_backend(to_gpu=False)
-    print("[XuPy] Switched to CPU (NumPy).")
+    global _global_gpu
+    with _lock:
+        changed, _global_gpu = _global_gpu, False
+    if changed:
+        _log.info("[XuPy] Switched to CPU (NumPy).")
+        print("[XuPy] Switched to CPU (NumPy).")
 
 
 def use_gpu() -> None:
-    """Switch XuPy to use CuPy (GPU) as the backend.
+    """Make CuPy (GPU) the default backend, process-wide.
 
-    After calling this function, all new array operations (e.g. ``xp.array``,
-    ``xp.zeros``) will create CuPy arrays.  Existing arrays are **not**
-    converted automatically.
+    Thread-safe and idempotent.  Existing arrays are **not** converted.
 
     Raises
     ------
     RuntimeError
         If CuPy is not available on this system.
     """
-    if _GPU:
-        return
+    global _global_gpu
     if not _GPU_AVAILABLE:
         raise RuntimeError(
             "[XuPy] CuPy is not available on this system. Cannot switch to GPU."
         )
-    _repopulate_backend(to_gpu=True)
-    print("[XuPy] Switched to GPU (CuPy).")
+    with _lock:
+        changed, _global_gpu = not _global_gpu, True
+    if changed:
+        _log.info("[XuPy] Switched to GPU (CuPy).")
+        print("[XuPy] Switched to GPU (CuPy).")
+
+
+@_contextmanager
+def backend(name: str):
+    """Scoped backend selection, local to the current thread / asyncio task.
+
+    Parameters
+    ----------
+    name : {"cpu", "numpy", "gpu", "cupy"}
+        Case-insensitive backend name.
+
+    Yields
+    ------
+    module
+        ``numpy`` or ``cupy``.
+
+    Raises
+    ------
+    ValueError
+        For an unknown name.
+    RuntimeError
+        For ``"gpu"``/``"cupy"`` when CuPy is not usable.
+
+    Examples
+    --------
+    >>> with xp.backend("cpu"):
+    ...     a = xp.zeros(3)   # numpy array, whatever the global default is
+    """
+    key = name.lower() if isinstance(name, str) else name
+    if key in ("cpu", "numpy"):
+        gpu = False
+    elif key in ("gpu", "cupy"):
+        gpu = True
+        if not _GPU_AVAILABLE:
+            raise RuntimeError("[XuPy] CuPy is not available on this system.")
+    else:
+        raise ValueError(
+            f"Unknown backend {name!r}; expected 'cpu', 'numpy', 'gpu' or 'cupy'."
+        )
+    token = _backend_var.set(gpu)
+    try:
+        yield _cupy if gpu else _np
+    finally:
+        _backend_var.reset(token)
+
+
+# ---------------------------------------------------------------------------
+# Device helpers (same call signatures on both backends)
+# ---------------------------------------------------------------------------
+
+@_contextmanager
+def _on_device(device_id: int):
+    """
+    Context manager to temporarily select a compute device.
+
+    Parameters
+    ----------
+    device_id : int
+        GPU mode: ``-1`` runs the block on the CPU (scoped backend override,
+        the global backend is untouched); ``0 <= id < n_gpus`` makes that CUDA
+        device current inside the block (also valid on a single-GPU machine).
+        CPU mode: a no-op for any value, for code portability.
+
+    Raises
+    ------
+    ValueError
+        In GPU mode, if ``device_id`` is not -1 or a valid device index.
+
+    Examples
+    --------
+    >>> with xp.on_device(0):
+    ...     a = xp.array([1, 2, 3])   # allocated on GPU 0
+    >>> with xp.on_device(-1):
+    ...     b = xp.array([4, 5, 6])   # NumPy array
+    """
+    if not _active_gpu():
+        yield
+        return
+    if device_id == -1:
+        with backend("cpu"):
+            yield
+        return
+    if not (_as_index(device_id) is not None and 0 <= device_id < _n_gpus):
+        raise ValueError(
+            f"[XuPy] Invalid device id {device_id!r}: expected -1 (CPU) or 0..{_n_gpus - 1}."
+        )
+    with _cupy.cuda.Device(device_id):
+        yield
+
+
+def _as_index(value):
+    """Return ``operator.index(value)`` (accepts numpy integers), or None."""
+    import operator
+
+    try:
+        return operator.index(value)
+    except TypeError:
+        return None
+
+
+def _set_device(device_id: int) -> None:
+    """
+    Set the current CUDA device (GPU mode); a no-op on the CPU backend.
+
+    Setting the device that is already current is a silent no-op.
+
+    Raises
+    ------
+    ValueError
+        In GPU mode, if ``device_id`` is not a valid device index.
+    """
+    if not _active_gpu():
+        _log.debug("[XuPy] set_device(%r) ignored: CPU backend.", device_id)
+        return
+    if not (_as_index(device_id) is not None and 0 <= device_id < _n_gpus):
+        raise ValueError(
+            f"[XuPy] Invalid device id {device_id!r}: expected 0..{_n_gpus - 1}."
+        )
+    if int(_cupy.cuda.runtime.getDevice()) == device_id:
+        return
+    _cupy.cuda.runtime.setDevice(device_id)
+    _log.info("[XuPy] Set device to %d", device_id)
+
+
+def _asnumpy_gpu(array):
+    return _cupy.asnumpy(array)
+
+
+def _asnumpy_cpu(array: _t.NDArray[_t.Any]) -> _t.Array:
+    """Identity for NumPy arrays; the data of a masked array."""
+    if isinstance(array, _np.ma.MaskedArray):
+        return array.data
+    return array
+
+
+def _asmarray_gpu(array: _t.NDArray[_t.Any]) -> _t.MaskedArray:
+    """
+    Converts an object to a (host) numpy masked array.
+
+    Args:
+        array: Input array-like object (e.g. an XuPy masked array).
+    """
+    try:
+        return array.asmarray()
+    except AttributeError:
+        return _np.ma.masked_array(array.data, mask=array.mask)
+
+
+def _asmarray_cpu(array: _t.NDArray[_t.Any]) -> _t.MaskedArray:
+    """Return a numpy masked array (unchanged if it already is one)."""
+    if isinstance(array, _np.ma.MaskedArray):
+        return array
+    return _np.ma.masked_array(array)
+
+
+# ---------------------------------------------------------------------------
+# Namespace tables
+# ---------------------------------------------------------------------------
+
+# Names in numpy.__all__ that XuPy does not forward: dunders (except
+# __array_namespace_info__) and host/tooling submodules.  `ma` is dynamic.
+# `ctypeslib` and `lib` stay on the CPU table (numpy parity) but are
+# "unsupported on GPU": they are host-only helpers (ctypes, I/O, stride tricks)
+# that must not silently mix with device arrays.
+_EXCLUDE = {
+    n for n in _np.__all__ if n.startswith("__") and n != "__array_namespace_info__"
+} | {"core", "f2py", "test", "testing", "typing", "show_config", "show_runtime", "ma"}
+
+# Removed in NumPy 2.0 (or earlier): never resolve on either backend.  Values
+# are hints used in the AttributeError message.
+_NUMPY2_REMOVED = {
+    "NaN": "nan", "NAN": "nan", "Inf": "inf", "Infinity": "inf", "infty": "inf",
+    "PINF": "inf", "NINF": "-inf", "PZERO": "0.0", "NZERO": "-0.0",
+    "float_": "float64", "complex_": "complex128", "cfloat": "complex128",
+    "singlecomplex": "complex64", "longfloat": "longdouble",
+    "longcomplex": "clongdouble", "clongfloat": "clongdouble",
+    "unicode_": "str_", "string_": "bytes_",
+    "float": "float64 (or the builtin 'float')", "int": "int_ (or the builtin 'int')",
+    "complex": "complex128 (or the builtin 'complex')",
+    "object": "object_ (or the builtin 'object')", "str": "str_ (or the builtin 'str')",
+    "unicode": "str_",
+    "in1d": "isin", "trapz": "trapezoid", "row_stack": "vstack", "product": "prod",
+    "cumproduct": "cumprod", "alltrue": "all", "sometrue": "any", "round_": "round",
+    "msort": "sort(a, axis=0)", "asfarray": "asarray(a, dtype=float64)",
+    "asscalar": "a.item()", "mat": "asmatrix", "cast": "asarray(x, dtype)",
+    "find_common_type": "result_type or promote_types",
+    "issubclass_": "issubclass", "issctype": "issubdtype", "issubsctype": "issubdtype",
+    "obj2sctype": "dtype(x).type", "sctype2char": "dtype(x).char",
+    "sctypes": "numpy.dtypes / issubdtype", "maximum_sctype": "dtype or finfo/iinfo",
+    "set_string_function": "set_printoptions", "byte_bounds": "lib.array_utils.byte_bounds",
+    "disp": "print", "who": "dir()", "safe_eval": "ast.literal_eval",
+    "format_parser": "rec.format_parser", "lookfor": "numpy.info / help",
+    "source": "inspect.getsource", "deprecate": "warnings.warn",
+    "add_newdoc": "(removed)", "compat": "(removed)", "nbytes": "dtype(x).itemsize",
+    "recfromcsv": "genfromtxt", "recfromtxt": "genfromtxt",
+    "set_numeric_ops": "(removed)", "fastCopyAndTranspose": "a.T.copy()",
+    "geterrobj": "geterr / errstate", "seterrobj": "seterr / errstate",
+    "tracemalloc_domain": "lib.tracemalloc_domain",
+    "AxisError": "exceptions.AxisError",
+    "ComplexWarning": "exceptions.ComplexWarning",
+    "VisibleDeprecationWarning": "exceptions.VisibleDeprecationWarning",
+    "ModuleDeprecationWarning": "exceptions.ModuleDeprecationWarning",
+    "RankWarning": "exceptions.RankWarning", "TooHardError": "exceptions.TooHardError",
+    "DataSource": "lib.npyio.DataSource", "annotations": "(not a NumPy name)",
+}
+
+#: Canonical NumPy 2.x public names (what both backends expose).
+_NUMPY_PUBLIC = frozenset(set(_np.__all__) - _EXCLUDE - set(_NUMPY2_REMOVED))
+
+#: CuPy-only tools exposed in GPU mode.
+_CUPY_ONLY = (
+    "asnumpy", "get_array_module", "cuda", "fuse", "ElementwiseKernel", "RawKernel",
+    "RawModule", "ReductionKernel", "get_default_memory_pool",
+    "get_default_pinned_memory_pool", "is_available", "clear_memo", "memoize",
+)
+
+_MISSING = object()
+_tab_cpu = None
+_tab_gpu = None
+_unsupported_gpu = frozenset()
+_table_lock = _threading.Lock()
+
+
+def _extras(gpu: bool) -> dict:
+    """XuPy's own names, identical in both modes (implementations may differ)."""
+    return {
+        "asnumpy": _asnumpy_gpu if gpu else _asnumpy_cpu,
+        "asmarray": _asmarray_gpu if gpu else _asmarray_cpu,
+        "MemoryContext": _MemoryContext if gpu else _CPUMemoryContext,
+        "NumpyContext": NumpyContext,
+        "on_device": _on_device,
+        "set_device": _set_device,
+        "array_size": _array_size,
+        "np": _np,
+        "npma": _np.ma,
+        "use_cpu": use_cpu,
+        "use_gpu": use_gpu,
+        "backend": backend,
+        "has_multi_gpu": _MULTIGPU,
+        "n_gpus": _n_gpus,
+        "__cuda_version__": _cuda_version,
+    }
+
+
+def _build_cpu_table() -> dict:
+    t = {}
+    for n in _NUMPY_PUBLIC:
+        v = getattr(_np, n, _MISSING)
+        if v is not _MISSING:
+            t[n] = v
+    t["__array_api_version__"] = getattr(_np, "__array_api_version__", None)
+    t.update(_extras(False))
+    return t
+
+
+def _build_gpu_table() -> dict:
+    global _unsupported_gpu
+    import cupyx  # type: ignore
+    from . import _shims
+
+    cp = _cupy
+    fill, override = _shims.build(cp, cupyx)
+    t, unsupported = {}, set()
+    for n in _NUMPY_PUBLIC:
+        v = getattr(cp, n, _MISSING)
+        if v is _MISSING:
+            v = fill.get(n, _MISSING)
+        if v is _MISSING:
+            unsupported.add(n)
+        else:
+            t[n] = v
+    for n in _CUPY_ONLY:
+        v = getattr(cp, n, _MISSING)
+        if v is not _MISSING:
+            t[n] = v
+    t["__array_api_version__"] = fill["__array_api_version__"]
+    t.update((n, v) for n, v in override.items() if n in _NUMPY_PUBLIC)
+    t.update(_extras(True))
+    _unsupported_gpu = frozenset(unsupported)
+    return t
+
+
+def _get_table(gpu: bool) -> dict:
+    global _tab_cpu, _tab_gpu
+    with _table_lock:
+        if gpu:
+            if _tab_gpu is None:
+                try:
+                    _tab_gpu = _build_gpu_table()
+                except Exception as err:
+                    raise RuntimeError(
+                        f"[XuPy] Failed to build the GPU namespace: {err!r}"
+                    ) from err
+            return _tab_gpu
+        if _tab_cpu is None:
+            _tab_cpu = _build_cpu_table()
+        return _tab_cpu
+
+
+def _dynamic(name: str, gpu: bool):
+    """Names computed at each access (never stored in the tables)."""
+    if name == "on_gpu":
+        return gpu
+    if name == "ma":
+        if gpu:
+            import importlib
+
+            return importlib.import_module("xupy.ma")
+        return _np.ma
+    return _MISSING
+
+
+def __getattr__(name: str):
+    gpu = _backend_var.get()
+    if gpu is None:
+        gpu = _global_gpu
+    table = _tab_gpu if gpu else _tab_cpu
+    if table is None:
+        table = _get_table(gpu)
+    try:
+        return table[name]
+    except KeyError:
+        pass
+    v = _dynamic(name, gpu)
+    if v is not _MISSING:
+        return v
+    msg = f"xupy has no attribute {name!r}"
+    if name in _NUMPY2_REMOVED:
+        msg += f": removed in NumPy 2.0, use {_NUMPY2_REMOVED[name]!r}"
+    elif gpu and name in _unsupported_gpu:
+        msg += (
+            f": numpy.{name} has no CuPy equivalent; "
+            "use xp.backend('cpu') / xp.asnumpy()"
+        )
+    raise AttributeError(msg)
+
+
+def _public_names() -> list:
+    """Names exported by ``from xupy import *`` for the active backend."""
+    table = _get_table(_active_gpu())
+    return sorted({n for n in table if not n.startswith("_")} | {"ma", "on_gpu"})
+
+
+def __dir__():
+    names = {n for n in globals() if not n.startswith("_")}
+    names.update(_get_table(_active_gpu()))
+    names.update(("ma", "on_gpu"))
+    return sorted(names)
