@@ -120,6 +120,11 @@ def assert_same(x, n, dev=None, strict_nomask=True, check_fill=True, ctx=""):
         _assert_values(host(x.data)[keep], np.asarray(n.data)[keep], f"{ctx}: data")
         if check_fill:
             fx, fn = np.asarray(x.fill_value), np.asarray(n.fill_value)
+            if fn.dtype != n.dtype and fx.dtype == n.dtype:
+                # numpy < 2.5.3 can keep an operand's fill_value dtype on a result of
+                # another dtype (int fill on an int / int -> float64 result); XuPy
+                # follows newer numpy and casts it to the result dtype.
+                fn = fn.astype(n.dtype)
             assert fx.dtype == fn.dtype, f"{ctx}: fill_value dtype {fx.dtype} != {fn.dtype}"
             np.testing.assert_array_equal(fx, fn, err_msg=f"{ctx}: fill_value")
         assert bool(x.hardmask) == bool(n.hardmask), f"{ctx}: hardmask"
