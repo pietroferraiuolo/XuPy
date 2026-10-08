@@ -83,10 +83,67 @@ del _n, _f, _d, _fx, _fy
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
-def _core():
-    from . import core
+_CORE = None
 
-    return core
+
+def _core():
+    global _CORE
+    if _CORE is None:
+        from . import core
+
+        _CORE = core
+    return _CORE
+
+
+# ---------------------------------------------------------------------------
+# fused cupy kernels (one launch for "op + mask OR + restore data under masks")
+# ---------------------------------------------------------------------------
+_FUSED = {}
+_BIN_C = {"add": "x + y", "subtract": "x - y", "multiply": "x * y"}
+# unary: name -> (C expression on x (float32/float64 safe), domain C expression or None)
+_UN_C = {
+    "sqrt": ("sqrt(x)", "x < 0"), "log": ("log(x)", "x <= 0"), "log2": ("log2(x)", "x <= 0"),
+    "log10": ("log10(x)", "x <= 0"), "exp": ("exp(x)", None), "sin": ("sin(x)", None),
+    "cos": ("cos(x)", None), "sinh": ("sinh(x)", None), "cosh": ("cosh(x)", None),
+    "tanh": ("tanh(x)", None), "arctan": ("atan(x)", None), "arcsinh": ("asinh(x)", None),
+}
+_FAST_UN_DTYPES = (_np.dtype("f4"), _np.dtype("f8"))
+
+
+def _fused_bin(op, which):
+    """Kernel ``z = m ? x : x <op> y`` with ``m = ma | mb`` (``which``: 'ab', 'a' or 'b')."""
+    key = ("bin", op, which)
+    k = _FUSED.get(key)
+    if k is None:
+        import cupy
+
+        ins = "T x, T y" + "".join(f", bool m{c}" for c in which)
+        mexp = " | ".join(f"m{c}" for c in which)
+        k = _FUSED[key] = cupy.ElementwiseKernel(
+            ins, "T z, bool m",
+            f"bool mm = {mexp}; m = mm; z = mm ? x : (T)({_BIN_C[op]});",
+            f"xupy_ma_fused_{op}_{which}",
+        )
+    return k
+
+
+def _fused_un(name, masked_in):
+    key = ("un", name, masked_in)
+    k = _FUSED.get(key)
+    if k is None:
+        import cupy
+
+        f, dom = _UN_C[name]
+        if dom is None:
+            body = (f"bool mm = {'mk' if masked_in else 'false'}; m = mm; "
+                    f"z = mm ? x : (T)({f});")
+        else:
+            body = (f"T r = {f}; bool mm = !isfinite(r) || ({dom})"
+                    f"{' || mk' if masked_in else ''}; m = mm; z = mm ? x : r;")
+        k = _FUSED[key] = cupy.ElementwiseKernel(
+            "T x" + (", bool mk" if masked_in else ""), "T z, bool m", body,
+            f"xupy_ma_fused_{name}_{int(masked_in)}")
+    return k
 
 
 def _is_xma(x):
@@ -200,6 +257,10 @@ def _munary(name, a, *args, **kwargs):
     """``numpy.ma`` masked unary operation (domain -> new masked values)."""
     c = _core()
     xp, ((d, m),) = _operands(a)
+    if (xp is not _np and not args and not kwargs and name in _UN_C and d.ndim
+            and d.dtype in _FAST_UN_DTYPES and (m is not nomask or _UN_C[name][1])):
+        res, nm = _fused_un(name, m is not nomask)(*((d,) if m is nomask else (d, m)))
+        return c._wrap(res, nm, like=_like(a))
     f = getattr(xp, name)
     dom = ufunc_domain.get(name)
     with _es():
@@ -245,6 +306,17 @@ def _mbin(name, a, b, *args, **kwargs):
     except TypeError:
         _raise_numpy_error(name, a, b)
         raise
+    if (xp is not _np and name in _BIN_C and not args and not kwargs and da.dtype == db.dtype
+            and (da.dtype.kind in "iu" or da.dtype in _FAST_UN_DTYPES)
+            and (da.ndim or db.ndim) and (ma is nomask or ma.shape == da.shape)
+            and (mb is nomask or mb.shape == db.shape)):
+        which = ("a" if ma is not nomask else "") + ("b" if mb is not nomask else "")
+        if which:
+            ins = (da, db) + tuple(k for k in (ma, mb) if k is not nomask)
+            res, m = _fused_bin(name, which)(*ins)
+        else:
+            res, m = xp.asarray(getattr(xp, name)(da, db)), nomask
+        return c._wrap(res, m, like=_like(a, b), sharedmask=True)
     with _es():
         res = xp.asarray(getattr(xp, name)(da, db, *args, **kwargs))
     m = _or(ma, mb, res.shape, xp)
@@ -702,13 +774,17 @@ def where(condition, x=_NV, y=_NV):
     xp = _get_xp(condition, x, y)
     cf = _to_dev(_arr(c.filled(condition, False)), xp)
     xd, yd = (_to_dev(c.getdata(v), xp) for v in (x, y))
-    cm, xm, ym = (_to_dev(c.getmaskarray(v), xp) for v in (condition, x, y))
+    xm, ym = (_to_dev(c.getmaskarray(v), xp) for v in (x, y))
+    plain_cond = not (_is_xma(condition) or _is_mconst(condition) or isinstance(condition, _NP_MASKED))
     if x is masked and y is not masked:
         xd, xm = xp.zeros((), yd.dtype), xp.ones((), bool)
     elif y is masked and x is not masked:
         yd, ym = xp.zeros((), xd.dtype), xp.ones((), bool)
     data = xp.where(cf, xd, yd)
-    mask = xp.where(cm, xp.ones((), bool), xp.where(cf, xm, ym))
+    mask = xp.where(cf, xm, ym)
+    if not plain_cond:
+        cm = _to_dev(c.getmaskarray(condition), xp)
+        mask = xp.where(cm, xp.ones((), bool), mask)
     return c._wrap(data, mask)
 
 

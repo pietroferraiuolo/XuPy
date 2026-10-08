@@ -33,10 +33,81 @@ __all__ = ["sort", "argsort"]
 _NV = _np._NoValue
 
 
-def _core():
-    from . import core as _c
+_CORE = None
 
-    return _c
+
+def _core():
+    global _CORE
+    if _CORE is None:
+        from . import core as _c
+
+        _CORE = _c
+    return _CORE
+
+
+# ---------------------------------------------------------------------------
+# fused cupy kernels: fill + reduce (+ count / finalisation) in a few launches
+# ---------------------------------------------------------------------------
+_FUSED = {}
+_F4, _F8 = _np.dtype("f4"), _np.dtype("f8")
+
+
+def _kern(key, make):
+    k = _FUSED.get(key)
+    if k is None:
+        import cupy
+
+        k = _FUSED[key] = make(cupy)
+    return k
+
+
+def _k_sum(cp):
+    return cp.ReductionKernel("T x, bool m", "T y", "m ? (T)0 : x", "a + b", "y = a", "0", "xupy_ma_sum")
+
+
+def _k_count(cp):
+    return cp.ReductionKernel("bool m", "int64 y", "m ? 0 : 1", "a + b", "y = a", "0", "xupy_ma_count")
+
+
+def _k_sumsq(cp):
+    # __dmul_rn: no fma contraction with the reduction add (bit-identical to (x-mu)*(x-mu) then sum)
+    return cp.ReductionKernel(
+        "float64 x, float64 mu, bool m, bool mm", "float64 y",
+        "(m || mm) ? 0.0 : __dmul_rn(x - mu, x - mu)", "a + b", "y = a", "0", "xupy_ma_sumsq")
+
+
+def _k_sqfill(cp):
+    return cp.ElementwiseKernel(
+        "float64 x, float64 mu, bool m, bool mm", "float64 z",
+        "z = (m || mm) ? 0.0 : __dmul_rn(x - mu, x - mu)", "xupy_ma_sqfill")
+
+
+def _fsum(data, mask, axis, keepdims):
+    """Sum of ``data`` with masked slots as 0.  Full reductions go through cupy's own (cub) sum:
+    a fused ReductionKernel is ~50x slower there."""
+    cp = _backend.cupy_module()
+    if axis is None or (type(axis) is tuple and len(axis) == data.ndim):
+        return cp.sum(cp.where(mask, 0.0, data), axis=axis, keepdims=keepdims)
+    return _kern("sum", _k_sum)(data, mask, axis=axis, keepdims=keepdims)
+
+
+def _k_mean(cp):
+    return cp.ElementwiseKernel(
+        "float64 s, int64 c", "float64 z, bool mm",
+        "z = (s * 1.0) / (double)(c == 0 ? 1 : c); mm = (c == 0) || !isfinite(z);", "xupy_ma_mean")
+
+
+def _k_varfin(root):
+    def make(cp):
+        tail = ("double r = sqrt(res); bool b = !isfinite(r); z = b ? res : r; m = mk || b;"
+                if root else "z = res; m = mk;")
+        return cp.ElementwiseKernel(
+            "float64 s, int64 c, int64 ddof, bool mm, bool scalar", "float64 z, bool m",
+            "long long n = c - ddof; bool bad = scalar ? (n == 0) : (n <= 0); "
+            "double res = s / (double)(bad ? 1 : n); "
+            "bool mk = scalar ? (mm || bad || !isfinite(res)) : ((c == 0) || bad); " + tail,
+            "xupy_ma_var_" + ("std" if root else "var"))
+    return make
 
 
 def _out_array(out, xp):
@@ -126,6 +197,19 @@ class _ReductionsMixin:
             return default
         return _core()._check_fill_value(fill_value, self._data.dtype)
 
+    def _fast_ok(self, axis, dtype, out, dtypes):
+        """Cupy fast path usable (masked float data, plain int axis, no dtype/out)?"""
+        d = self._data
+        if (self._xp is _np or self._mask is nomask or out is not None or dtype is not None
+                or d.dtype not in dtypes or d.ndim == 0 or d.size == 0 or self._mask.shape != d.shape):
+            return False
+        if axis is None:
+            return True
+        ax = (axis,) if type(axis) is int else axis
+        if type(ax) is not tuple or not ax or not all(type(i) is int and -d.ndim <= i < d.ndim for i in ax):
+            return False
+        return len({i % d.ndim for i in ax}) == len(ax)
+
     def _reduce(self, name, axis, dtype, keepdims, fill, out=None):
         """Reduce the filled data with ``xp.<name>``; return ``(result, mask)``.
 
@@ -133,6 +217,9 @@ class _ReductionsMixin:
         casting/shape rules); otherwise `_emit` copies.
         """
         xp = self._xp
+        if name == "sum" and self._fast_ok(axis, dtype, out, (_F8,)):
+            res = _fsum(self._data, self._mask, axis, keepdims)
+            return res, self._mask.all(axis=axis, keepdims=keepdims)
         axis = self._ax(axis)
         kw = {} if dtype is None else {"dtype": dtype}
         tgt = _out_array(out, xp)
@@ -194,6 +281,8 @@ class _ReductionsMixin:
     def _count_raw(self, axis, keepdims):
         """Unmasked count as an ``intp`` array of the data's backend."""
         if self._mask is not nomask:
+            if self._xp is not _np and self._mask.ndim and self._fast_ok(axis, None, None, (self._data.dtype,)):
+                return _kern("count", _k_count)(self._mask, axis=axis, keepdims=keepdims)
             axis = self._ax(axis)
             return (~self._mask).sum(axis=axis, dtype=_np.intp, keepdims=keepdims)
         items, shape = self._items(axis, keepdims)
@@ -248,6 +337,11 @@ class _ReductionsMixin:
     # ---- mean / var / std / anom ----------------------------------------
     def _mean_raw(self, axis, dtype, keepdims):
         xp = self._xp
+        if self._fast_ok(axis, dtype, None, (_F8,)):
+            s = _fsum(self._data, self._mask, axis, keepdims)
+            cnt = _kern("count", _k_count)(self._mask, axis=axis, keepdims=keepdims)
+            res, mm = _kern("mean", _k_mean)(s, cnt)
+            return res, (mm if res.ndim else cnt == 0)
         if self._mask is nomask:  # ndarray.mean: axis 0 of a 0-d array is an AxisError (not normalised)
             if xp is _np:
                 return xp.asarray(xp.mean(self._data, axis=axis, dtype=dtype, keepdims=keepdims)), nomask
@@ -273,9 +367,24 @@ class _ReductionsMixin:
         res, m = self._mean_raw(axis, dtype, _kw(keepdims))
         return self._emit(res, m, out)
 
+    def _var_fast(self, axis, ddof, keepdims, root):
+        """Masked float64 var/std (``root``) in 5 launches; same values/masks as the generic path."""
+        data, mask = self._data, self._mask
+        s = _fsum(data, mask, axis, True)
+        cnt = _kern("count", _k_count)(mask, axis=axis, keepdims=True)
+        mu, mm = _kern("mean", _k_mean)(s, cnt)
+        if axis is None:
+            ss = _backend.cupy_module().sum(_kern("sqfill", _k_sqfill)(data, mu, mask, mm), keepdims=keepdims)
+        else:
+            ss = _kern("sumsq", _k_sumsq)(data, mu, mask, mm, axis=axis, keepdims=keepdims)
+        c = cnt.reshape(ss.shape)
+        return _kern(("varfin", root), _k_varfin(root))(ss, c, ddof, mm.reshape(ss.shape), ss.ndim == 0)
+
     def _var_raw(self, axis, dtype, ddof, keepdims, mean):
         xp = self._xp
         data, mask = self._data, self._mask
+        if mean is _NV and type(ddof) is int and self._fast_ok(axis, dtype, None, (_F8,)):
+            return self._var_fast(axis, ddof, keepdims, False)
         if mask is nomask:
             if axis is not None:  # invalid axes: AxisError as ndarray.var (cupy raises IndexError)
                 _np.lib.array_utils.normalize_axis_tuple(axis, data.ndim)
@@ -325,6 +434,9 @@ class _ReductionsMixin:
         ``mean`` is accepted but ignored, as in numpy.ma 2.5.
         """
         xp = self._xp
+        if out is None and type(ddof) is int and self._fast_ok(axis, dtype, None, (_F8,)):
+            res, m = self._var_fast(axis, ddof, _kw(keepdims), True)
+            return self._emit(res, m, None, like=self)
         res, m = self._var_raw(axis, dtype, ddof, _kw(keepdims), _NV)
         if out is not None:  # numpy.ma: sqrt in place, mask as set by var
             root = xp.sqrt(res if m is nomask else xp.where(m, xp.zeros((), dtype=res.dtype), res))
