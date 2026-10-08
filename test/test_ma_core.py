@@ -15,6 +15,7 @@ import pytest
 import numpy as np
 from typing import Any
 
+import xupy
 from xupy import _core
 from xupy.ma import masked_array, MaskedArray, nomask, masked
 from xupy.ma.core import _XupyMaskedArray
@@ -55,12 +56,16 @@ class TestInitialization:
         assert isinstance(arr.mask, xpm.ndarray)
 
     def test_init_from_numpy_array(self):
-        """Test initialization from NumPy array."""
+        """Host (numpy) input goes to the active backend; the mask moves with the data."""
         data = np.array([1.0, 2.0, 3.0], dtype=np.float32)
         mask = np.array([False, True, False], dtype=bool)
         arr = masked_array(data, mask)
         assert arr.shape == (3,)
-        # numpy input keeps its device (numpy.ma-like), even with the GPU backend active.
+        assert isinstance(arr.data, xpm.ndarray)
+        assert isinstance(arr.mask, xpm.ndarray)
+        np.testing.assert_array_equal(_to_numpy(arr.mask), mask)
+        with xupy.backend("cpu"):
+            arr = masked_array(data, mask)
         assert isinstance(arr.data, np.ndarray)
         assert isinstance(arr.mask, np.ndarray)
         np.testing.assert_array_equal(arr.mask, mask)
@@ -73,12 +78,17 @@ class TestInitialization:
         assert arr.mask is nomask or not arr.mask.any()
 
     def test_init_from_numpy_masked_array(self):
-        """Test initialization from NumPy masked array."""
+        """A numpy.ma input goes to the active backend, data and mask alike."""
         np_ma = np.ma.array([1.0, 2.0, 3.0], mask=[False, True, False])
         arr = masked_array(np_ma)
         assert arr.shape == (3,)
-        # np.ma.MaskedArray input lives on the host (numpy), also with the GPU backend active.
+        assert isinstance(arr.data, xpm.ndarray)
+        assert isinstance(arr.mask, xpm.ndarray)
+        np.testing.assert_array_equal(_to_numpy(arr.mask), np_ma.mask)
+        with xupy.backend("cpu"):
+            arr = masked_array(np_ma)
         assert isinstance(arr.data, np.ndarray)
+        assert isinstance(arr.mask, np.ndarray)
         np.testing.assert_array_equal(arr.mask, np_ma.mask)
 
     def test_init_with_dtype(self):

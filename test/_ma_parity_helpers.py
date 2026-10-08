@@ -57,8 +57,21 @@ def make(data, mask=None, dev="cpu", **kw):
     mk = {} if mask is None else {"mask": mask}
     n = np.ma.masked_array(data.copy(), **{k: (np.array(v) if k == "mask" else v) for k, v in mk.items()}, **kw)
     xm = None if mask is None else to_dev(np.asarray(mask), dev)
-    x = XMA.masked_array(to_dev(data.copy(), dev), **({} if xm is None else {"mask": xm}), **kw)
+    # Host data goes to the active backend on construction, so build the "cpu"
+    # array under the CPU backend (it then stays numpy-backed for its lifetime).
+    with xupy.backend(dev):
+        x = XMA.masked_array(to_dev(data.copy(), dev), **({} if xm is None else {"mask": xm}), **kw)
     return x, n
+
+
+def mka(dev, *args, **kw):
+    """``XMA.masked_array(*args, **kw)`` built under the ``dev`` backend.
+
+    Host input (numpy/numpy.ma/list) goes to the active backend, so an array
+    meant to be numpy-backed is built under the CPU backend.
+    """
+    with xupy.backend(dev):
+        return XMA.masked_array(*args, **kw)
 
 
 def _tol(dt):

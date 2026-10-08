@@ -23,7 +23,7 @@ import pytest
 import xupy
 
 from ._ma_parity_helpers import (
-    GPU_OK, XMA, assert_same, cp, host, make, on_dev, to_dev,
+    GPU_OK, XMA, assert_same, cp, host, make, mka, on_dev, to_dev,
 )
 
 pytestmark = pytest.mark.filterwarnings("ignore::RuntimeWarning")
@@ -902,7 +902,7 @@ class TestInplaceAliasing:
     def test_constructor_mask_input_not_changed_by_ops(self, dev):
         m = mask_for("partial", (3, 4))
         xm = to_dev(m.copy(), dev)
-        x = XMA.masked_array(to_dev(sample(np.float64, (3, 4)), dev), mask=xm)
+        x = mka(dev, to_dev(sample(np.float64, (3, 4)), dev), mask=xm)
         n = np.ma.masked_array(sample(np.float64, (3, 4)), mask=m)
         ox, on = make(sample(np.float64, (3, 4)), mask_for("partial", (3, 4), 11), dev)
         x += ox
@@ -1192,7 +1192,7 @@ class TestUfuncDispatch:
         x, n = pair(np.float64, (3, 4), "partial", dev)
         w = np.ones((3, 4), bool)
         w[1, 1] = False
-        rx = np.add(x, 1.0, where=to_dev(w, dev), out=XMA.masked_array(to_dev(np.zeros((3, 4)), dev)))
+        rx = np.add(x, 1.0, where=to_dev(w, dev), out=mka(dev, to_dev(np.zeros((3, 4)), dev)))
         m = np.ma.getmaskarray(n)
         got = host(XMA.getmaskarray(rx))
         assert got[m].all()
@@ -1437,13 +1437,26 @@ class TestBackendFromData:
             assert_same(y, ny, dev="cpu")
             assert isinstance(x.data, np.ndarray)
 
-    def test_numpy_ma_input_under_gpu_backend_is_numpy(self, gpu, restore_backend):
+    def test_host_input_goes_to_active_backend(self, gpu, restore_backend):
         n = np.ma.masked_array(sample(np.float64, (3,)), mask=[0, 1, 0])
         with xupy.backend("gpu"):
             r = XMA.masked_array(n)
-            assert isinstance(r.data, np.ndarray)
+            assert isinstance(r.data, cp.ndarray) and isinstance(r.mask, cp.ndarray)
+            assert_same(r, n, dev="gpu")
             r2 = XMA.masked_array(n.data.copy(), mask=n.mask.copy())
-            assert isinstance(r2.data, np.ndarray)
+            assert isinstance(r2.data, cp.ndarray) and isinstance(r2.mask, cp.ndarray)
+            assert_same(r2, n, dev="gpu")
+        with xupy.backend("cpu"):
+            r = XMA.masked_array(n)
+            assert isinstance(r.data, np.ndarray) and isinstance(r.mask, np.ndarray)
+            assert_same(r, n, dev="cpu")
+
+    def test_existing_numpy_xupy_array_stays_numpy_under_gpu_backend(self, gpu, restore_backend):
+        x, n = pair(np.float64, (3,), "partial", "cpu")
+        with xupy.backend("gpu"):
+            r = XMA.masked_array(x)
+            assert_same(r, n, dev="cpu")
+            assert_same(XMA.zeros_like(x), np.ma.zeros_like(n), dev="cpu")
 
     def test_list_follows_cpu_backend(self, restore_backend):
         with xupy.backend("cpu"):
