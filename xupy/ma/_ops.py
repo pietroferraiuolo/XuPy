@@ -975,7 +975,8 @@ def _f_count_nonzero(a, axis=None, *, keepdims=False):
         if keepdims:
             r = r.reshape((1,) * a.ndim) if axis is None else xp.expand_dims(
                 r, tuple(_np.lib.array_utils.normalize_axis_tuple(axis, a.ndim)))
-    return _host_scalar(r) if r.ndim == 0 else r
+    # numpy < 2.1 returns a Python int (no ``.ndim``) for ``axis=None``.
+    return _host_scalar(r) if _np.ndim(r) == 0 else r
 
 
 def _f_nonzero(a):

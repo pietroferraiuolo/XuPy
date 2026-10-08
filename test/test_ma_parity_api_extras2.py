@@ -33,7 +33,34 @@ from ._ma_parity_helpers import (
 _RNG = np.random.default_rng(424242)
 
 
+def _fixed_corrcoef(x, y=None, rowvar=True, allow_masked=True):
+    """numpy >= 2.2's ``numpy.ma.corrcoef`` (covariance / outer(std, std)), on the installed numpy."""
+    corr = np.ma.cov(x, y, rowvar, allow_masked=allow_masked)
+    try:
+        std = np.ma.sqrt(np.ma.diagonal(corr))
+    except ValueError:
+        return np.ma.core.MaskedConstant()
+    corr /= np.ma.multiply.outer(std, std)
+    return corr
+
+
+def _corrcoef_is_cov_based():
+    probe = np.ma.masked_array([[100.0, 101.0, 102.0, 105.0], [101.0, 103.0, 106.0, 99.0]],
+                               mask=[[0, 0, 0, 1], [0, 0, 0, 0]])
+    return bool(np.allclose(np.ma.corrcoef(probe), _fixed_corrcoef(probe), rtol=1e-9, atol=0))
+
+
+# numpy 2.0's numpy.ma.corrcoef (numpy < 2.2 as far as checked: 2.0.2) estimates each
+# coefficient from the pair-wise complete samples; numpy >= 2.2 divides the covariance by
+# outer(std, std) of its diagonal (and 2.5 dropped the deprecated bias/ddof).  XuPy follows the
+# newer algorithm, so on an old numpy the oracle is the newer algorithm above, built on that
+# numpy's own ``cov``.  On numpy >= 2.2 this is numpy.ma.corrcoef itself.
+_np_corrcoef = np.ma.corrcoef if _corrcoef_is_cov_based() else _fixed_corrcoef
+
+
 def _ref(name):
+    if name == "corrcoef":
+        return _np_corrcoef
     fn = getattr(np.ma, name, None)
     if fn is None:
         fn = getattr(np.ma.extras, name, None)
@@ -178,6 +205,12 @@ class TestCoverage:
             except pytest.skip.Exception:
                 continue
             pn = list(inspect.signature(fn).parameters)
+            if name == "corrcoef":
+                # numpy < 2.5 still has the deprecated, ignored `bias`/`ddof` parameters
+                # (default np._NoValue); numpy 2.5 removed them and so does XuPy.
+                pn = [q for q in pn if q not in ("bias", "ddof")]
+            if name in ("std", "var") and pn == ["a", "args", "params"]:
+                pn = ["a"]  # numpy < 2.5: opaque (a, *args, **params) forwarder; 2.5 spells it out
             sx = inspect.signature(getattr(XMA.extras, name))
             if any(p.kind is p.VAR_POSITIONAL for p in sx.parameters.values()):
                 continue  # generic *args/**kwargs forwarders (anom/anomalies)
@@ -685,20 +718,20 @@ class TestCov:
                 with _ctx(bias, ddof):
                     rx, rn = XMA.cov(x, y, bias=bias, ddof=ddof), np.ma.cov(n, ny, bias=bias, ddof=ddof)
                     _close(rx, rn, dev)
-        _close(XMA.corrcoef(x, y), np.ma.corrcoef(n, ny), dev)
-        _close(XMA.corrcoef(xt, yt, rowvar=False), np.ma.corrcoef(nt, nyt, rowvar=False), dev)
+        _close(XMA.corrcoef(x, y), _np_corrcoef(n, ny), dev)
+        _close(XMA.corrcoef(xt, yt, rowvar=False), _np_corrcoef(nt, nyt, rowvar=False), dev)
         _close(XMA.cov(xt, yt, rowvar=False), np.ma.cov(nt, nyt, rowvar=False), dev)
 
     def test_1d_and_scalar(self, dev):
         a = _rnd(np.float64, (9,))
         x, n = make(a, _rmask((9,), 0.2), dev)
         _close(XMA.cov(x), np.ma.cov(n), dev)
-        rx, rn = XMA.corrcoef(x), np.ma.corrcoef(n)
+        rx, rn = XMA.corrcoef(x), _np_corrcoef(n)
         assert rn is np.ma.masked
         assert rx is XMA.masked
         y, ny = make(_rnd(np.float64, (9,)), _rmask((9,), 0.2), dev)
         _close(XMA.cov(x, y), np.ma.cov(n, ny), dev)
-        _close(XMA.corrcoef(x, y), np.ma.corrcoef(n, ny), dev)
+        _close(XMA.corrcoef(x, y), _np_corrcoef(n, ny), dev)
 
     def test_few_samples_masked_entries(self, dev):
         # entries estimated from <= ddof samples are masked
@@ -708,12 +741,12 @@ class TestCov:
         for ddof in (None, 0, 1):
             with _ctx(ddof):
                 _close(XMA.cov(x, ddof=ddof), np.ma.cov(n, ddof=ddof), dev)
-        _close(XMA.corrcoef(x), np.ma.corrcoef(n), dev)
+        _close(XMA.corrcoef(x), _np_corrcoef(n), dev)
 
     def test_allow_masked_false_and_errors(self, dev):
         a = _rnd(np.float64, (3, 6))
         x, n = make(a, _rmask((3, 6), 0.3), dev)
-        for fx, fn in ((XMA.cov, np.ma.cov), (XMA.corrcoef, np.ma.corrcoef)):
+        for fx, fn in ((XMA.cov, np.ma.cov), (XMA.corrcoef, _np_corrcoef)):
             rx, rn = both(fx, fn, (x, n), allow_masked=False)
         x, n = make(a, None, dev)
         _close(XMA.cov(x, allow_masked=False), np.ma.cov(n, allow_masked=False), dev)
@@ -724,7 +757,7 @@ class TestCov:
         with _ctx("plain"):
             p = _rnd(np.float64, (3, 6))
             _close(XMA.cov(to_dev(p, dev)), np.ma.cov(p), dev)
-            _close(XMA.corrcoef(to_dev(p, dev)), np.ma.corrcoef(p), dev)
+            _close(XMA.corrcoef(to_dev(p, dev)), _np_corrcoef(p), dev)
 
 
 # ---------------------------------------------------------------------------

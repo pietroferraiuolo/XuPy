@@ -76,9 +76,12 @@ def call(x, n, name, args=(), kw=None, kwx=None, argsx=None):
     kwx = kwn if kwx is None else kwx
     argsx = args if argsx is None else argsx
     try:
-        rn = getattr(n, name)(*args, **kwn)
+        rn = getattr(n, name)(*args, **_H.np_kw(kwn))
     except Exception as e:  # noqa: BLE001
-        with pytest.raises(type(e)):
+        if _H.is_np_uint_fill_bug(e):   # numpy 2.1 bug: no oracle, XuPy must just work
+            getattr(x, name)(*argsx, **kwx)
+            return None, None
+        with pytest.raises(_H.expected_exc(e, kwn)):
             getattr(x, name)(*argsx, **kwx)
         return None, None
     return getattr(x, name)(*argsx, **kwx), rn
@@ -88,9 +91,9 @@ def callf(fx, fn, x, n, args=(), kw=None, kwx=None):
     kwn = dict(kw or {})
     kwx = kwn if kwx is None else kwx
     try:
-        rn = fn(n, *args, **kwn)
+        rn = fn(n, *args, **_H.np_kw(kwn))
     except Exception as e:  # noqa: BLE001
-        with pytest.raises(type(e)):
+        with pytest.raises(_H.expected_exc(e, kwn)):
             fx(x, *args, **kwx)
         return None, None
     return fx(x, *args, **kwx), rn
@@ -148,9 +151,9 @@ def sn(name):
 def inplace(x, n, name, kw):
     """In-place method on both; True if it ran (and returned None) on both."""
     try:
-        r = getattr(n, name)(**kw)
+        r = getattr(n, name)(**_H.np_kw(kw))
     except Exception as e:  # noqa: BLE001
-        with pytest.raises(type(e)):
+        with pytest.raises(_H.expected_exc(e, kw)):
             getattr(x, name)(**kw)
         return False
     assert r is None

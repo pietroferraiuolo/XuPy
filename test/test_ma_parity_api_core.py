@@ -22,7 +22,9 @@ import pytest
 import xupy
 
 from . import _ma_parity_helpers as _H
-from ._ma_parity_helpers import XMA, assert_same, both, host, make, mka, on_dev, to_dev
+from ._ma_parity_helpers import (
+    NP_LT_25, XMA, assert_same, both, expected_exc, host, make, mka, np_kw, on_dev, to_dev,
+)
 
 pytestmark = [
     pytest.mark.filterwarnings("ignore::RuntimeWarning"),
@@ -264,8 +266,8 @@ SORT_KW = [
 ]
 
 
-def _kw_ok(kw):
-    return "descending" not in kw or _has_kw(np.ma.sort, "descending")
+# `descending=` exists from numpy 2.5; on older numpy a falsy value is dropped for the
+# oracle (helpers.np_kw) and a truthy one must raise ValueError in XuPy (helpers.expected_exc).
 
 
 @pytest.mark.parametrize("name", ["sort", "argsort"])
@@ -273,8 +275,6 @@ def _kw_ok(kw):
 def test_sort_argsort_keywords(dev, name, form):
     for key in ("f2", "f2n", "i2", "f2a"):
         for kw in SORT_KW:
-            if not _kw_ok(kw):
-                continue
             if key != "f2" and kw not in ({}, {"axis": 0}, {"descending": True}, {"endwith": False},
                                           {"stable": True}):
                 continue
@@ -286,9 +286,9 @@ def _sort_case(dev, name, form, key, kw):
         # in-place: compare the mutated arrays
         x, n = D(key, dev)
         try:
-            n.sort(**kw)
+            n.sort(**np_kw(kw))
         except Exception as e:  # noqa: BLE001
-            with pytest.raises(type(e)):
+            with pytest.raises(expected_exc(e, kw)):
                 x.sort(**kw)
             return
         x.sort(**kw)
@@ -298,13 +298,19 @@ def _sort_case(dev, name, form, key, kw):
     if name == "argsort" and "kind" not in kw and "stable" not in kw:
         kw["kind"] = "stable"        # cupy sort is unstable: ties between masked fills
     x, n = D(key, dev)
+    if form == "function" and name == "argsort" and NP_LT_25 and kw.get("stable"):
+        # numpy < 2.5: np.ma.argsort(stable=True) silently ignores `stable` (the method form
+        # and 2.5 raise ValueError); XuPy follows 2.5.
+        with pytest.raises(ValueError):
+            XMA.argsort(x, **kw)
+        return
     if form == "function":
         rx, rn = both(getattr(XMA, name), getattr(np.ma, name), (x, n), **kw)
     else:
         try:
-            rn = getattr(n, name)(**kw)
+            rn = getattr(n, name)(**np_kw(kw))
         except Exception as e:  # noqa: BLE001
-            with pytest.raises(type(e)):
+            with pytest.raises(expected_exc(e, kw)):
                 getattr(x, name)(**kw)
             return
         rx = getattr(x, name)(**kw)
@@ -805,6 +811,12 @@ def _creation_case(dev, name, args, kw):
     with xupy.backend(dev):
         rx = getattr(XMA, name)(*args, **kw)
     assert isinstance(rx, XMA.MaskedArray)
+    if kw.get("hardmask") and isinstance(rn, np.ma.MaskedArray):
+        assert rx.hardmask is True
+        if not rn.hardmask:
+            # numpy <= 2.3 silently ignores `hardmask=` in the ones/identity/arange/indices
+            # creation functions (honoured from 2.4); XuPy honours it.
+            rn.harden_mask()
     if isinstance(rn, np.ma.MaskedArray) and rn.dtype.kind in "fiubc":
         # fill_value default of the result dtype; ones()/zeros() float default dtype is float64
         assert_same(rx, rn, dev=dev, strict_nomask=False)
@@ -1143,6 +1155,10 @@ def test_deprecation_warning_parity(dev, name, kw):
     x, n = D("b2" if name != "round_" else "f2", dev)
     rn, wn = _warned(nf, n, **kw)
     rx, wx = _warned(getattr(XMA, name), x, **kw)
+    if name == "round_" and NPV < (2, 5):
+        # numpy.ma.round_ only became deprecated in numpy 2.5; XuPy's round_ is deprecated
+        # unconditionally (documented in its docstring), so on older numpy it warns alone.
+        wn = ["DeprecationWarning"]
     assert wx == wn, f"{name}: xupy warns {wx}, numpy {wn} (numpy {np.__version__})"
     assert_same(rx, rn, dev=dev, strict_nomask=False)
     if name == "round_" and NPV >= (2, 5):

@@ -21,7 +21,7 @@ import pytest
 
 import xupy
 from ._ma_parity_helpers import (
-    XMA, GPU_OK, cp, make, assert_same, both, to_dev, host, on_dev,
+    XMA, GPU_OK, cp, make, assert_same, both, to_dev, host, on_dev, np_repr, NP_LT_25,
 )
 
 NOMASK = np.ma.nomask
@@ -140,7 +140,7 @@ _OPTIONS = {
 
 
 def _check_repr(x, n):
-    rn, rx = repr(n), repr(x)
+    rn, rx = np_repr(n), repr(x)
     assert rx == rn
     assert str(x) == str(n)
     assert format(x, "") == format(n, "")
@@ -162,7 +162,11 @@ def _note(*label):
     try:
         yield
     except BaseException as e:  # noqa: BLE001
-        e.add_note(f"case: {label!r}")
+        note = f"case: {label!r}"
+        if hasattr(e, "add_note"):      # BaseException.add_note is Python 3.11+
+            e.add_note(note)
+        else:
+            e.args = (f"{e.args[0] if e.args else ''}\n{note}",) + tuple(e.args[1:])
         raise
 
 
@@ -244,9 +248,9 @@ class TestReprParity:
             x, n = make(_rand((4, 6), dt), _rmask((4, 6)), dev)
             with _note(dt):
                 for sl in (np.s_[1:3], np.s_[:, ::2], np.s_[::-1, 1], np.s_[0, :]):
-                    assert repr(x[sl]) == repr(n[sl])
+                    assert repr(x[sl]) == np_repr(n[sl])
                     assert str(x[sl]) == str(n[sl])
-                assert repr(x.reshape(2, 12)) == repr(n.reshape(2, 12))
+                assert repr(x.reshape(2, 12)) == np_repr(n.reshape(2, 12))
 
     def test_result_of_operations_repr(self, dev):
         x, n = make(_rand((3, 3)), _rmask((3, 3)), dev)
@@ -814,6 +818,8 @@ class TestAtleast:
             with _note(name):
                 rx, rn = both(getattr(XMA, name), getattr(np.ma, name))
                 if rn is not None:
+                    if NP_LT_25 and rn == []:
+                        rn = ()   # numpy < 2.5 (checked 2.0.2, 2.2.6) returns a list for no arguments; 2.5 a tuple
                     assert rx == rn == ()
 
     def test_returns_new_mask_semantics(self, dev):

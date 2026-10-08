@@ -23,6 +23,70 @@ DEVICES = ["cpu"] + (
 )
 
 
+# numpy.ma's default fill_value for unsigned dtypes is int64 before numpy 2.2.
+NP_LT_22 = np.lib.NumpyVersion(np.__version__) < "2.2.0"
+_NP_OLD_UFILL = NP_LT_22
+
+
+# numpy.ma.sort/argsort(descending=...) arrived in numpy 2.5; XuPy follows 2.5 (descending=True
+# raises ValueError "not supported for masked arrays", a falsy value is a no-op).
+NP_LT_21 = np.lib.NumpyVersion(np.__version__) < "2.1.0"
+NP_LT_25 = np.lib.NumpyVersion(np.__version__) < "2.5.0"
+
+
+def np_kw(kw):
+    """Keywords for the installed numpy.ma: drop a falsy ``descending=``.
+
+    numpy < 2.5 rejects the keyword (TypeError); a falsy value is a no-op on 2.5, so
+    dropping it keeps the comparison meaningful.  Identity on numpy >= 2.5.
+    """
+    if NP_LT_25 and "descending" in kw and not kw["descending"]:
+        return {k: v for k, v in kw.items() if k != "descending"}
+    return kw
+
+
+def expected_exc(e, kw=None):
+    """Exception type XuPy must raise when numpy.ma raised ``e``.
+
+    Identity on numpy >= 2.5.  On older numpy, two numpy quirks that 2.5 changed are mapped
+    to XuPy's (2.5) behaviour, ValueError:
+      * ``descending=True`` -> TypeError "unexpected keyword" (2.5: ValueError, unsupported);
+      * ``MaskedArray.sort(axis=None)`` on masked data -> TypeError "MaskedIterator has no
+        len()" (numpy <= 2.2; 2.5 raises ValueError "indices and arr must have the same
+        number of dimensions").
+    """
+    if NP_LT_25 and isinstance(e, TypeError):
+        msg = str(e)
+        if "descending" in msg or "MaskedIterator" in msg:
+            return ValueError
+    return type(e)
+
+
+def np_repr(n):
+    """``repr`` of a numpy.ma result, with the numpy < 2.2 unsigned default fill_value normalised.
+
+    numpy < 2.2 prints the default fill_value of an unsigned array as ``np.int64(999999)``;
+    2.2+ and XuPy print ``np.uint64(999999)`` (see ``_NP_OLD_UFILL``).  Identity otherwise.
+    """
+    r = repr(n)
+    if _NP_OLD_UFILL and isinstance(n, np.ma.MaskedArray) and n.dtype.kind == "u":
+        fv = np.asarray(n.fill_value)
+        if fv.dtype == np.int64:
+            r = r.replace(f"fill_value=np.int64({fv.item()})", f"fill_value=np.uint64({fv.item()})")
+    return r
+
+
+def is_np_uint_fill_bug(e):
+    """True if numpy.ma raised its unsigned default-fill_value bug (numpy < 2.2).
+
+    With an int64 default fill_value on uint data, ``min``/``max``/``ptp`` of a fully masked lane do
+    ``np.copyto(result, fill_value, where=...)`` which raises "Cannot cast scalar from dtype('int64')
+    to dtype('uint8')" on numpy 2.1 (observed on 2.1.3; 2.0.2 and 2.2+ are fine).  XuPy returns the
+    masked result instead, so there is no oracle: XuPy must merely not raise.
+    """
+    return NP_LT_22 and isinstance(e, TypeError) and "Cannot cast scalar from dtype('int64') to dtype('uint" in str(e)
+
+
 def xp_of(dev):
     return cp if dev == "gpu" else np
 
@@ -125,6 +189,12 @@ def assert_same(x, n, dev=None, strict_nomask=True, check_fill=True, ctx=""):
                 # another dtype (int fill on an int / int -> float64 result); XuPy
                 # follows newer numpy and casts it to the result dtype.
                 fn = fn.astype(n.dtype)
+            if (_NP_OLD_UFILL and fx.dtype != fn.dtype and fx.dtype.kind in "iu"
+                    and fn.dtype.kind in "iu" and fx.shape == fn.shape and (fx == fn).all()):
+                # numpy < 2.2 (checked on 2.0.2) stores the default fill_value of an
+                # unsigned-int array as int64 (999999); 2.2+ (and XuPy) keep the
+                # array's own signedness.  Integer kinds with equal values only.
+                fn = fn.astype(fx.dtype)
             assert fx.dtype == fn.dtype, f"{ctx}: fill_value dtype {fx.dtype} != {fn.dtype}"
             np.testing.assert_array_equal(fx, fn, err_msg=f"{ctx}: fill_value")
         assert bool(x.hardmask) == bool(n.hardmask), f"{ctx}: hardmask"
@@ -157,9 +227,21 @@ def both(fx, fn, *args_pair, **kw):
     xa = [a for a, _ in args_pair]
     na = [b for _, b in args_pair]
     try:
-        rn = fn(*na, **kw)
+        rn = fn(*na, **np_kw(kw))
     except Exception as e:   # noqa: BLE001
-        with pytest.raises(type(e)):
+        if NP_LT_21 and isinstance(e, TypeError) and "a_min" in str(e) and "missing" in str(e):
+            # numpy < 2.1: np.ma.clip needs both a_min and a_max positionally; the
+            # `min=`/`max=` keywords (and clip(a) alone) arrived in 2.1.  XuPy supports the
+            # keywords (superset): there is no oracle, so only require that XuPy accepts the
+            # call.  With no bound at all it forwards to ndarray.clip, which on numpy < 2.1
+            # raises ValueError("One of max or min must be given") (2.1+: identity).
+            if all(kw.get(k) is None for k in ("min", "max")):
+                with pytest.raises(ValueError, match="One of max or min"):
+                    fx(*xa, **kw)
+            else:
+                fx(*xa, **kw)
+            return None, None
+        with pytest.raises(expected_exc(e, kw)):
             fx(*xa, **kw)
         return None, None
     return fx(*xa, **kw), rn
