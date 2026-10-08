@@ -31,7 +31,7 @@ Homepage = "https://github.com/pietroferraiuolo/XuPy"
 packages = ["xupy", "xupy.ma"]
 
 [tool.setuptools.package-data]
-xupy = ["py.typed"]
+xupy = ["py.typed", "*.pyi"]
 
 [tool.setuptools.dynamic]
 version = {attr = "xupy.__version__.__version__"}

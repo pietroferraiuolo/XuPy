@@ -93,6 +93,19 @@ class TestCPUMemoryContext:
         ctx.force_memory_deallocation()
         ctx.force_memory_pool_reset()
 
+    def test_cpu_memory_context_info_in_mib(self):
+        """total/free/used are reported in MiB (1024**2 bytes), not bytes."""
+        psutil = pytest.importorskip("psutil")
+        info = _CPUMemoryContext().get_memory_info()
+        assert info["total"] == pytest.approx(
+            psutil.virtual_memory().total / 1024**2, rel=1e-3
+        )
+
+    def test_cpu_memory_context_repr_uses_mib(self):
+        """__repr__ labels the unit as MiB."""
+        pytest.importorskip("psutil")
+        assert "MiB" in repr(_CPUMemoryContext())
+
     def test_cpu_memory_context_check_memory_pressure(self):
         """check_memory_pressure returns a bool."""
         ctx = _CPUMemoryContext()

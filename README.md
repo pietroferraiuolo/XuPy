@@ -135,7 +135,8 @@ with xp.MemoryContext() as ctx:
 with xp.MemoryContext(memory_threshold=0.8, auto_cleanup=True) as ctx:
     # Monitor memory usage
     mem_info = ctx.get_memory_info()
-    print(f"GPU Memory: {mem_info['used'] / (1024**3):.2f} GB")
+    # 'total', 'free' and 'used' are in MiB (1024**2 bytes)
+    print(f"GPU Memory: {mem_info['used']:.2f} MiB")
     
     # Aggressive cleanup when needed
     if ctx.check_memory_pressure():
@@ -152,8 +153,12 @@ with xp.MemoryContext(memory_threshold=0.8, auto_cleanup=True) as ctx:
 - **Pressure Detection**: Automatic cleanup when memory usage is high
 - **Aggressive Cleanup**: Force garbage collection and cache clearing
 - **Emergency Cleanup**: Nuclear option for out-of-memory situations
-- **Object Tracking**: Track GPU objects for proper cleanup
+- **Safe Cleanup**: Only garbage collection and memory-pool freeing; user objects are never modified
 - **Memory History**: Keep history of memory usage over time
+
+All memory figures are binary: `MB` / `MiB` = 1024**2 bytes and `GB` / `GiB` = 1024**3 bytes
+(this also holds for `xp.array_size(shape, dtype, out_unit='MB')`, which accepts `'B'`, `'KB'`, `'MB'`, `'GB'`).
+The previous device is always restored when the context exits.
 
 ## Documentation
 
