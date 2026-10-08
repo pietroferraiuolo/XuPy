@@ -61,6 +61,21 @@ def default_xp():
     return _np
 
 
+def creation_xp(raw, keep_device=False):
+    """Array module for *creating* a masked array from ``raw``.
+
+    cupy data stays on the GPU.  Host data (numpy arrays, ``numpy.ma`` arrays,
+    Python data) goes to the active XuPy backend, so it is transferred to the
+    GPU in GPU mode (the XuPy <= 1.7 contract), unless ``keep_device`` is set
+    (an existing numpy-backed XuPy masked array never moves implicitly).
+    """
+    if is_cupy_array(raw):
+        return cupy_module()
+    if keep_device and isinstance(raw, _np.ndarray):
+        return _np
+    return default_xp()
+
+
 def is_cupy_module(xp) -> bool:
     return xp is not _np
 

@@ -115,16 +115,22 @@ def masked_all(shape, dtype=float):
     return _c._wrap(xp.empty(shape, dtype), xp.ones(shape, dtype=bool))
 
 
+def _like_xp(a):
+    """Device for ``*_like`` results: as the constructor, host input that is not
+    already a XuPy masked array goes to the active backend."""
+    return _backend.creation_xp(_c._unpack(a)[0], keep_device=getattr(a, "_is_xupy_masked", False))
+
+
 def masked_all_like(arr):
     """Empty fully-masked array with the shape and dtype of ``arr``."""
-    xp, d, _ = _parts(arr)
+    xp, d, _ = _parts(arr, _like_xp(arr))
     like = arr if _c.isMaskedArray(arr) else None
     return _c._wrap(xp.empty_like(d), xp.ones(d.shape, dtype=bool), like=like)
 
 
 def _make_like(name):
     def func(a, dtype=None, order="K", subok=True, shape=None):
-        xp, d, m = _parts(a)
+        xp, d, m = _parts(a, _like_xp(a))
         data = getattr(xp, name)(d, dtype=dtype, order=order, shape=shape)
         if m is not nomask:  # numpy's __array_finalize__: keep the mask when sizes agree
             try:

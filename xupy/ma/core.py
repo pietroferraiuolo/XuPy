@@ -214,10 +214,12 @@ class _XupyMaskedArray(_OpsMixin, _ReductionsMixin, _PrintMixin):
 
     Notes
     -----
-    The array lives on the device of its data: a cupy array gives a cupy-backed
-    masked array, a numpy array (or `numpy.ma` array) a numpy-backed one, and
-    lists/scalars use the active XuPy backend.  The mask always follows the
-    data.  Use `to_device` to move an array.  Methods mirror `numpy.ma`;
+    Device rule: cupy data stays on the GPU; host data (numpy arrays,
+    `numpy.ma` arrays, lists, scalars) goes to the active XuPy backend, i.e. it
+    is transferred to the GPU in GPU mode.  An existing XuPy masked array keeps
+    its device, and operations follow the device of their operands (they never
+    move data implicitly).  The mask always follows the data.  Use `to_device`
+    to move an array explicitly.  Methods mirror `numpy.ma`;
     scalars (``a[i]``, full reductions) come back as numpy scalars or `masked`.
     Instances hold ``_data``, ``_mask`` (`nomask` or a bool array of the data's
     shape), ``_fill_value``, ``_hardmask`` and ``_sharedmask``.
@@ -255,16 +257,20 @@ class _XupyMaskedArray(_OpsMixin, _ReductionsMixin, _PrintMixin):
             src_fill = getattr(data, "_fill_value", None)
             src_hard = getattr(data, "_hardmask", None)
 
-        if isinstance(raw, _np.ndarray):
-            xp = _np
-        elif _is_cupy_array(raw):
-            xp = _cupy_module()
-        elif is_seq and _get_xp(*raw) is not _np:
+        if is_seq and _get_xp(*raw) is not _np:
             xp = _get_xp(*raw)
         else:
-            xp = _backend.default_xp()
+            xp = _backend.creation_xp(raw, keep_device=isinstance(data, _XupyMaskedArray))
+        if src_mask is not nomask and _get_xp(src_mask) is not xp:
+            src_mask = _backend.asarray(src_mask, xp)  # host numpy.ma mask -> device
 
         dtype = None if dtype is None else _np.dtype(dtype)
+        if xp is not _np and isinstance(raw, _np.ndarray) and raw.dtype.kind not in "biufc" and dtype is None:
+            # host data bound for the GPU: report the unsupported dtype as on the CPU,
+            # cupy would raise an opaque ValueError while transferring it
+            raise NotImplementedError(
+                f"dtype {raw.dtype} is not supported: only numeric and boolean data."
+            )
         if xp is _np:
             arr = _np.array(raw, dtype=dtype, copy=copy, order=order, ndmin=ndmin)
         else:

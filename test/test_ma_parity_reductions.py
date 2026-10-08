@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 
 from . import _ma_parity_helpers as _H
-from ._ma_parity_helpers import XMA, assert_same, host, make, on_dev, to_dev
+from ._ma_parity_helpers import XMA, assert_same, host, make, mka, on_dev, to_dev
 
 pytestmark = [
     pytest.mark.filterwarnings("ignore::RuntimeWarning"),
@@ -429,7 +429,7 @@ class TestOutKeyword:
                     shape = np.shape(ref)
                     dt = np.asarray(ref).dtype
                     on = np.ma.masked_array(np.zeros(shape, dt))
-                    ox = XMA.masked_array(to_dev(np.zeros(shape, dt), dev))
+                    ox = mka(dev, to_dev(np.zeros(shape, dt), dev))
                     rn = getattr(n, name)(axis=axis, out=on)
                     rx = getattr(x, name)(axis=axis, out=ox)
                     ctx = f"{name} {dtype} {mkind} axis={axis}"
@@ -442,7 +442,7 @@ class TestOutKeyword:
             for shape in [(3,), (4, 4), (2, 5), ()]:
                 x, n = pair("float64", (3, 4), "partial", dev)
                 on = np.ma.masked_array(np.zeros(shape))
-                ox = XMA.masked_array(to_dev(np.zeros(shape), dev))
+                ox = mka(dev, to_dev(np.zeros(shape), dev))
                 try:
                     getattr(n, name)(axis=0, out=on)
                 except Exception as e:  # noqa: BLE001
@@ -456,7 +456,7 @@ class TestOutKeyword:
         for name in ("sum", "mean", "min", "max", "prod"):
             x, n = pair("float64", (3, 4), "partial", dev)
             on = np.ma.masked_array(np.zeros(4, dtype="int64"))
-            ox = XMA.masked_array(to_dev(np.zeros(4, dtype="int64"), dev))
+            ox = mka(dev, to_dev(np.zeros(4, dtype="int64"), dev))
             try:
                 getattr(n, name)(axis=0, out=on)
             except Exception as e:  # noqa: BLE001
@@ -474,7 +474,7 @@ class TestOutKeyword:
         for name in ("sum", "min", "max", "mean", "any"):
             x, n = pair("float64", (3, 4), "partial", dev)
             on = np.ma.masked_array(np.zeros(()))
-            ox = XMA.masked_array(to_dev(np.zeros(()), dev))
+            ox = mka(dev, to_dev(np.zeros(()), dev))
             try:
                 rn = getattr(n, name)(out=on)
             except Exception as e:  # noqa: BLE001
@@ -671,7 +671,7 @@ class TestSort:
         d = np.array([(2, 0.5), (1, 0.7), (2, 0.1), (1, 0.2)], dtype=dt)
         # structured dtypes are unsupported by design (DESIGN.md: numeric and bool data only)
         with pytest.raises((NotImplementedError, TypeError)):
-            XMA.masked_array(to_dev(d, dev))
+            mka(dev, to_dev(d, dev))
 
     def test_sort_returns_none_and_is_inplace(self, dev):
         x, n = pair("float64", (6,), "partial", dev)
@@ -772,7 +772,7 @@ class TestNonzeroClipCompressed:
     def test_clip_out(self, dev):
         x, n = pair("float64", (3, 4), "partial", dev)
         on = np.ma.masked_array(np.zeros((3, 4)))
-        ox = XMA.masked_array(to_dev(np.zeros((3, 4)), dev))
+        ox = mka(dev, to_dev(np.zeros((3, 4)), dev))
         try:
             rn = n.clip(-0.2, 0.2, out=on)
         except Exception as e:  # noqa: BLE001
@@ -855,7 +855,7 @@ class TestTakeTolistRealImag:
     def test_take_out(self, dev):
         x, n = pair("float64", (6,), "partial", dev)
         on = np.ma.masked_array(np.zeros(3))
-        ox = XMA.masked_array(to_dev(np.zeros(3), dev))
+        ox = mka(dev, to_dev(np.zeros(3), dev))
         try:
             n.take([0, 1, 2], out=on)
         except Exception as e:  # noqa: BLE001
@@ -1094,7 +1094,7 @@ class TestFunctionForms:
         for name in ("sum", "mean", "min", "max"):
             x, n = pair("float64", (3, 4), "partial", dev)
             on = np.ma.masked_array(np.zeros(4))
-            ox = XMA.masked_array(to_dev(np.zeros(4), dev))
+            ox = mka(dev, to_dev(np.zeros(4), dev))
             try:
                 rn = getattr(np.ma, name)(n, axis=0, out=on)
             except Exception as e:  # noqa: BLE001
@@ -1177,7 +1177,7 @@ class TestAverage:
         x, n = make(d, np.array([0, 1, 0, 0, 0, 0], bool), dev)
         w = np.arange(1.0, 7.0)
         wm = np.ma.masked_array(w, mask=[0, 0, 1, 0, 0, 0])
-        wx = XMA.masked_array(to_dev(w, dev), mask=to_dev(np.array([0, 0, 1, 0, 0, 0], bool), dev))
+        wx = mka(dev, to_dev(w, dev), mask=to_dev(np.array([0, 0, 1, 0, 0, 0], bool), dev))
         try:
             rn = np.ma.average(n, weights=wm)
         except Exception as e:  # noqa: BLE001

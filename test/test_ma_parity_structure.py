@@ -21,7 +21,7 @@ import pytest
 import xupy
 
 from ._ma_parity_helpers import (
-    GPU_OK, XMA, assert_same, both, cp, host, make, on_dev, to_dev, xp_of,
+    GPU_OK, XMA, assert_same, both, cp, host, make, mka, on_dev, to_dev, xp_of,
 )
 
 NM = XMA.nomask
@@ -264,7 +264,7 @@ def test_mask_is_nomask_when_not_given(builder):
 def test_mask_is_nomask_when_not_given_on_device(dev_):
     if dev_ == "gpu" and not GPU_OK:
         pytest.skip("no usable GPU")
-    x = XMA.masked_array(to_dev(np.arange(4.0), dev_))
+    x = mka(dev_, to_dev(np.arange(4.0), dev_))
     assert x.mask is NM
     assert on_dev(x.data, dev_)
 
@@ -667,10 +667,10 @@ def try_make(data, mask, dev, **kw):
                                **({} if mask is None else {"mask": np.array(mask)}), **kw)
     except Exception as e:  # noqa: BLE001
         with pytest.raises(type(e)):
-            XMA.masked_array(to_dev(np.array(data).copy(), dev),
+            mka(dev, to_dev(np.array(data).copy(), dev),
                              **({} if mask is None else {"mask": to_dev(np.array(mask), dev)}), **kw)
         return None
-    x = XMA.masked_array(to_dev(np.array(data).copy(), dev),
+    x = mka(dev, to_dev(np.array(data).copy(), dev),
                          **({} if mask is None else {"mask": to_dev(np.array(mask), dev)}), **kw)
     return x, n
 
@@ -686,7 +686,7 @@ class TestConstructorMasks:
                 d = np.arange(6.0).reshape(shape)
                 if isinstance(mask, bool):
                     n = np.ma.masked_array(d.copy(), mask=mask)
-                    x = XMA.masked_array(to_dev(d.copy(), dev), mask=mask)
+                    x = mka(dev, to_dev(d.copy(), dev), mask=mask)
                     assert_same(x, n, dev=dev)
                     continue
                 r = try_make(d, mask, dev)
@@ -695,12 +695,12 @@ class TestConstructorMasks:
 
     def test_wrong_size_mask_raises_maskerror(self, dev):
         with pytest.raises(np.ma.MaskError):
-            XMA.masked_array(to_dev(np.arange(3.0), dev), mask=to_dev(np.array([True, False]), dev))
+            mka(dev, to_dev(np.arange(3.0), dev), mask=to_dev(np.array([True, False]), dev))
         with pytest.raises(np.ma.MaskError):
-            XMA.masked_array(to_dev(np.arange(4.0), dev), mask=to_dev(np.zeros(3, bool), dev))
+            mka(dev, to_dev(np.arange(4.0), dev), mask=to_dev(np.zeros(3, bool), dev))
 
     def test_mask_nomask(self, dev):
-        x = XMA.masked_array(to_dev(np.arange(3.0), dev), mask=NM)
+        x = mka(dev, to_dev(np.arange(3.0), dev), mask=NM)
         n = np.ma.masked_array(np.arange(3.0), mask=NNM)
         assert_same(x, n, dev=dev)
 
@@ -709,7 +709,8 @@ class TestConstructorMasks:
         for shrink in (True, False):
             for mask in (False, [0, 0, 0], [0, 1, 0], True):
                 with case(shrink, mask):
-                    x = XMA.masked_array(
+                    x = mka(
+                        dev,
                         to_dev(d, dev),
                         mask=mask if isinstance(mask, bool) else to_dev(np.array(mask), dev),
                         shrink=shrink)
@@ -752,7 +753,7 @@ class TestConstructorMasks:
     def test_copy_semantics_numpy_input(self, copy_, dev):
         d = np.arange(4.0)
         dd = to_dev(d.copy(), dev)
-        x = XMA.masked_array(dd, copy=copy_)
+        x = mka(dev, dd, copy=copy_)
         x[0] = 99.0
         if copy_:
             assert host(dd)[0] == 0.0
@@ -767,7 +768,7 @@ class TestConstructorMasks:
     def test_copy_semantics_mask_input(self, copy_, dev):
         m = pattern((4,), 2, 0)
         mm = to_dev(m.copy(), dev)
-        x = XMA.masked_array(to_dev(np.arange(4.0), dev), mask=mm, copy=copy_)
+        x = mka(dev, to_dev(np.arange(4.0), dev), mask=mm, copy=copy_)
         x[1] = XMA.masked
         n_m = m.copy()
         n = np.ma.masked_array(np.arange(4.0), mask=n_m, copy=copy_)
@@ -785,22 +786,23 @@ class TestConstructorMasks:
     def _keep_mask_one(keep_mask, new_mask, src, dev):
         d = np.arange(3.0)
         n0 = np.ma.masked_array(d.copy(), mask=[0, 1, 0])
-        x0 = XMA.masked_array(to_dev(d.copy(), dev), mask=to_dev(np.array([0, 1, 0], bool), dev))
+        x0 = mka(dev, to_dev(d.copy(), dev), mask=to_dev(np.array([0, 1, 0], bool), dev))
         kw = {} if new_mask is None else {"mask": np.array(new_mask)}
         kx = {} if new_mask is None else {"mask": to_dev(np.array(new_mask), dev)}
         n = np.ma.masked_array(n0, keep_mask=keep_mask, **kw)
-        x = XMA.masked_array(x0 if src == "xupy" else n0, keep_mask=keep_mask,
-                             **({} if src == "npma" or new_mask is None else kx),
-                             **({"mask": np.array(new_mask)} if src == "npma" and new_mask is not None else {}))
+        # a numpy.ma source (and its host mask override) goes to the active backend
+        x = mka(dev, x0 if src == "xupy" else n0, keep_mask=keep_mask,
+                **({} if src == "npma" or new_mask is None else kx),
+                **({"mask": np.array(new_mask)} if src == "npma" and new_mask is not None else {}))
         # ``_mask`` must always be set (old keep_mask=False bug) and the mask readable
         assert x.shape == (3,)
         _ = x.mask
-        assert_same(x, n, dev=dev if src == "xupy" else "cpu")
+        assert_same(x, n, dev=dev)
 
     def test_keep_mask_false_with_nothing_else(self, dev):
-        x0 = XMA.masked_array(to_dev(np.arange(3.0), dev), mask=to_dev(np.array([0, 1, 0], bool), dev))
+        x0 = mka(dev, to_dev(np.arange(3.0), dev), mask=to_dev(np.array([0, 1, 0], bool), dev))
         n0 = np.ma.masked_array(np.arange(3.0), mask=[0, 1, 0])
-        x = XMA.masked_array(x0, keep_mask=False)
+        x = mka(dev, x0, keep_mask=False)
         n = np.ma.masked_array(n0, keep_mask=False)
         assert_same(x, n, dev=dev)
         # and the new array is fully usable
@@ -809,7 +811,7 @@ class TestConstructorMasks:
 
     def test_hard_mask_from_existing(self, dev):
         n0 = np.ma.masked_array(np.arange(3.0), mask=[0, 1, 0], hard_mask=True, fill_value=5.0)
-        x0 = XMA.masked_array(to_dev(np.arange(3.0), dev), mask=to_dev(np.array([0, 1, 0], bool), dev),
+        x0 = mka(dev, to_dev(np.arange(3.0), dev), mask=to_dev(np.array([0, 1, 0], bool), dev),
                               hard_mask=True, fill_value=5.0)
         assert_same(XMA.masked_array(x0), np.ma.masked_array(n0), dev=dev)
         assert_same(XMA.masked_array(x0, hard_mask=False), np.ma.masked_array(n0, hard_mask=False), dev=dev)
@@ -825,10 +827,13 @@ class TestConstructorMasks:
 
 
 class TestConstructorSources:
-    def test_from_numpy_array(self):
+    def test_from_numpy_array(self, dev):
         d = np.arange(4.0)
-        x = XMA.masked_array(d)
-        assert isinstance(x.data, np.ndarray)
+        x = mka(dev, d)
+        assert on_dev(x.data, dev)
+        # default backend (GPU when usable): host input is transferred
+        default = XMA.masked_array(d)
+        assert isinstance(default.data, cp.ndarray if GPU_OK else np.ndarray)
 
     def test_from_nested_lists_cpu_backend(self):
         with xupy.backend("cpu"):
@@ -852,8 +857,8 @@ class TestConstructorSources:
                 x = XMA.masked_array(value)
                 n = np.ma.masked_array(value)
                 assert x.shape == ()
-                # an existing numpy 0-d array keeps its device (DESIGN decision 4)
-                edev = "cpu" if isinstance(value, np.ndarray) else ("gpu" if backend == "gpu" else "cpu")
+                # host scalars, including a numpy 0-d array, go to the active backend
+                edev = "gpu" if backend == "gpu" else "cpu"
                 assert on_dev(x.data, edev)
                 assert_same(x, n, dev=edev)
 
@@ -871,18 +876,21 @@ class TestConstructorSources:
         assert_same(x, np.ma.masked_array([]), dev="gpu" if backend == "gpu" else "cpu")
 
     @pytest.mark.parametrize("backend", ["cpu", pytest.param("gpu", marks=needs_gpu)])
-    def test_numpy_input_keeps_device(self, backend):
+    def test_numpy_input_goes_to_active_backend(self, backend):
         with xupy.backend(backend):
             x = XMA.masked_array(np.arange(4.0), mask=np.array([0, 1, 0, 0], bool))
-        assert isinstance(x.data, np.ndarray) and isinstance(x.mask, np.ndarray)
+        edev = "gpu" if backend == "gpu" else "cpu"
+        assert on_dev(x.data, edev) and on_dev(x.mask, edev)
+        np.testing.assert_array_equal(host(x.mask), [0, 1, 0, 0])
 
     @pytest.mark.parametrize("backend", ["cpu", pytest.param("gpu", marks=needs_gpu)])
-    def test_np_ma_input_stays_numpy(self, backend):
+    def test_np_ma_input_goes_to_active_backend(self, backend):
         n0 = np.ma.masked_array(np.arange(4.0), mask=[0, 1, 0, 0])
         with xupy.backend(backend):
             x = XMA.masked_array(n0)
-        assert isinstance(x.data, np.ndarray) and isinstance(x.mask, np.ndarray)
-        assert_same(x, n0, dev="cpu")
+        edev = "gpu" if backend == "gpu" else "cpu"
+        assert on_dev(x.data, edev) and on_dev(x.mask, edev)  # the numpy.ma mask moves too
+        assert_same(x, n0, dev=edev)
 
     @needs_gpu
     @pytest.mark.parametrize("backend", ["cpu", "gpu"])
@@ -892,11 +900,28 @@ class TestConstructorSources:
         assert isinstance(x.data, cp.ndarray) and isinstance(x.mask, cp.ndarray)
 
     @needs_gpu
-    def test_mask_follows_data_device(self):
-        x = XMA.masked_array(cp.arange(4.0), mask=np.array([0, 1, 0, 0], bool))
-        assert isinstance(x.data, cp.ndarray) and isinstance(x.mask, cp.ndarray)
-        y = XMA.masked_array(np.arange(4.0), mask=[0, 1, 0, 0])
-        assert isinstance(y.data, np.ndarray) and isinstance(y.mask, np.ndarray)
+    @pytest.mark.parametrize("backend", ["cpu", "gpu"])
+    def test_mask_follows_data_device(self, backend):
+        with xupy.backend(backend):
+            # cupy data stays on the GPU and drags a host mask along, whatever the backend
+            x = XMA.masked_array(cp.arange(4.0), mask=np.array([0, 1, 0, 0], bool))
+            assert isinstance(x.data, cp.ndarray) and isinstance(x.mask, cp.ndarray)
+            # host data and host mask go to the active backend together
+            y = XMA.masked_array(np.arange(4.0), mask=[0, 1, 0, 0])
+            xp = cp if backend == "gpu" else np
+            assert isinstance(y.data, xp.ndarray) and isinstance(y.mask, xp.ndarray)
+
+    @needs_gpu
+    def test_existing_numpy_xupy_array_stays_numpy_under_gpu_backend(self):
+        with xupy.backend("cpu"):
+            x0 = XMA.masked_array(np.arange(4.0), mask=[0, 1, 0, 0])
+        with xupy.backend("gpu"):
+            x1 = XMA.masked_array(x0)
+            x2 = XMA.array(x0)
+            x3 = XMA.zeros_like(x0)
+            x4 = XMA.masked_all_like(x0)
+        for x in (x1, x2, x3, x4):
+            assert isinstance(x.data, np.ndarray) and isinstance(x.mask, np.ndarray)
 
     def test_from_xupy_array_keeps_device(self, dev):
         x0, n0 = make(np.arange(4.0), [0, 1, 0, 0], dev)
@@ -905,15 +930,16 @@ class TestConstructorSources:
 
     def test_from_np_ma_with_mask_override(self, dev):
         n0 = np.ma.masked_array(np.arange(4.0), mask=[0, 1, 0, 0])
-        x = XMA.masked_array(n0, mask=[0, 0, 1, 0])
+        x = mka(dev, n0, mask=[0, 0, 1, 0])
         n = np.ma.masked_array(n0, mask=[0, 0, 1, 0])
-        assert_same(x, n, dev="cpu")
+        assert_same(x, n, dev=dev)
 
     def test_from_ma_masked_constant(self):
-        x = XMA.masked_array(MSK)
         n = np.ma.masked_array(NMSK)
-        assert x.shape == n.shape
-        assert_same(XMA.getmaskarray(x), np.ma.getmaskarray(n), dev="cpu")
+        for dev in ("cpu", "gpu") if GPU_OK else ("cpu",):
+            x = mka(dev, MSK)
+            assert x.shape == n.shape
+            assert_same(XMA.getmaskarray(x), np.ma.getmaskarray(n), dev=dev)
 
     def test_dtype_property_is_np_dtype(self, dev):
         d = to_dev(np.arange(3), dev)
@@ -1048,13 +1074,13 @@ class TestFillValueCheck:
         for dt in ["i1", "i4", "i8", "u1", "u8", "f2", "f4", "f8", "c8", "c16", "?",
                    "U3", "S3", "M8[s]", "m8[s]"]:
             if np.dtype(dt).kind in "USMmO":
-                # XuPy ma supports numeric and bool dtypes only (settled decision).
-                if dev == "cpu":
-                    with pytest.raises(NotImplementedError):
-                        XMA.masked_array(np.zeros(2, dt))
+                # XuPy ma supports numeric and bool dtypes only (settled decision),
+                # whichever backend the host array is built on.
+                with pytest.raises(NotImplementedError):
+                    mka(dev, np.zeros(2, dt))
                 continue
             with case(dt):
-                x = XMA.masked_array(to_dev(np.zeros(2, dt), dev))
+                x = mka(dev, to_dev(np.zeros(2, dt), dev))
                 n = np.ma.masked_array(np.zeros(2, dt))
                 fx, fn = x.fill_value, n.fill_value
                 assert type(fx) is type(fn)
@@ -1070,11 +1096,11 @@ class TestFillValueCheck:
         ]
         for fv, dt in cases:
             if np.dtype(dt).kind in "USMmO":
-                # XuPy ma supports numeric and bool dtypes only (settled decision).
-                if dev == "cpu":
-                    d = np.array(["a", "b", "c"])
-                    with pytest.raises(NotImplementedError):
-                        XMA.masked_array(d, fill_value=fv)
+                # XuPy ma supports numeric and bool dtypes only (settled decision),
+                # whichever backend the host array is built on.
+                d = np.array(["a", "b", "c"])
+                with pytest.raises(NotImplementedError):
+                    mka(dev, d, fill_value=fv)
                 continue
             with case(fv, dt):
                 d = np.arange(3).astype(dt)
@@ -1085,9 +1111,9 @@ class TestFillValueCheck:
                         fn = n.fill_value
                     except Exception as e:  # noqa: BLE001
                         with pytest.raises(type(e)):
-                            XMA.masked_array(to_dev(d.copy(), dev), fill_value=fv)
+                            mka(dev, to_dev(d.copy(), dev), fill_value=fv)
                         continue
-                    x = XMA.masked_array(to_dev(d.copy(), dev), fill_value=fv)
+                    x = mka(dev, to_dev(d.copy(), dev), fill_value=fv)
                     fx = x.fill_value
                 assert type(fx) is type(fn)
                 np.testing.assert_array_equal(np.asarray(fx), np.asarray(fn))
@@ -1451,14 +1477,14 @@ def _val_ma_exact(shape, dev):
     v = rdata(shape, seed=9) * 10
     m = pattern(shape, 2, 0) if len(shape) else np.array(True)
     n = np.ma.masked_array(v.copy(), mask=m.copy())
-    x = XMA.masked_array(to_dev(v.copy(), dev), mask=to_dev(m.copy(), dev))
+    x = mka(dev, to_dev(v.copy(), dev), mask=to_dev(m.copy(), dev))
     return x, n
 
 
 def _val_ma_nomask(shape, dev):
     v = rdata(shape, seed=10) * 10
     n = np.ma.masked_array(v.copy())
-    x = XMA.masked_array(to_dev(v.copy(), dev))
+    x = mka(dev, to_dev(v.copy(), dev))
     return x, n
 
 
@@ -1474,7 +1500,7 @@ def _val_ma_row(shape, dev):
     v = rdata(sh, seed=12) * 10
     m = pattern(sh, 2, 0) if len(sh) else np.array(True)
     n = np.ma.masked_array(v.copy(), mask=m.copy())
-    x = XMA.masked_array(to_dev(v.copy(), dev), mask=to_dev(m.copy(), dev))
+    x = mka(dev, to_dev(v.copy(), dev), mask=to_dev(m.copy(), dev))
     return x, n
 
 
@@ -1701,7 +1727,7 @@ class TestSetitem:
 
     def test_setitem_slice_with_scalar_mask_value(self, dev):
         x, n = make(np.arange(5.0), [0, 1, 0, 0, 0], dev)
-        v = XMA.masked_array(to_dev(np.array(3.0), dev), mask=True)
+        v = mka(dev, to_dev(np.array(3.0), dev), mask=True)
         vn = np.ma.masked_array(np.array(3.0), mask=True)
         x[1:4] = v
         n[1:4] = vn
@@ -2597,10 +2623,10 @@ class TestCopyPickle:
         assert isinstance(y.data, np.ndarray)
         assert_same(y, n, dev="cpu")
 
-    def test_pickle_numpy_ma_array_loads_into_xupy_equivalent(self):
+    def test_pickle_numpy_ma_array_loads_into_xupy_equivalent(self, dev):
         n = np.ma.masked_array(np.arange(4.0), mask=[0, 1, 0, 0])
-        y = XMA.masked_array(pickle.loads(pickle.dumps(n)))
-        assert_same(y, n, dev="cpu")
+        y = mka(dev, pickle.loads(pickle.dumps(n)))
+        assert_same(y, n, dev=dev)
 
     def test_getstate_setstate_roundtrip(self, dev):
         x, n = make(rdata((4,)), [0, 1, 0, 0], dev, fill_value=3.0, hard_mask=True)
@@ -2710,14 +2736,16 @@ class TestMaskNoneAndMisc:
         if src == "list":
             rx, rn = XMA.array([1.0, 2.0], mask=None), np.ma.array([1.0, 2.0], mask=None)
         elif src == "array":
-            rx, rn = XMA.array(to_dev(base, dev), mask=None), np.ma.array(base, mask=None)
+            with xupy.backend(dev):
+                rx, rn = XMA.array(to_dev(base, dev), mask=None), np.ma.array(base, mask=None)
         elif src == "xma":
             x, n = make(base, m, dev)
             rx, rn = XMA.array(x, mask=None), np.ma.array(n, mask=None)
         else:
             _, n = make(base, m, dev)
-            rx, rn = XMA.array(n, mask=None), np.ma.array(n, mask=None)
-        assert_same(rx, rn, dev=None if src in ("list", "npma") else dev)
+            with xupy.backend(dev):  # a numpy.ma source goes to the active backend
+                rx, rn = XMA.array(n, mask=None), np.ma.array(n, mask=None)
+        assert_same(rx, rn, dev=None if src == "list" else dev)
 
     @pytest.mark.parametrize("data", [[True, False], [1, 2], [1.5, 2.5], [1 + 2j, 3j]])
     def test_conj_dtype(self, data, dev):

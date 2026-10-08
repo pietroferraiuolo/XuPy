@@ -19,6 +19,7 @@ import time
 import numpy as np
 import pytest
 
+import xupy
 from ._ma_parity_helpers import (
     XMA, GPU_OK, cp, make, assert_same, both, to_dev, host, on_dev,
 )
@@ -518,7 +519,9 @@ class TestMaskedAll:
     def test_masked_all_like(self, dev, kind):
         for dt in [np.float64, np.int32, np.bool_, np.complex64]:
             x, n, d = _inp(kind, _A23.astype(dt), _M23, dev)
-            with _note(kind, dt):
+            # host input (plain numpy, numpy.ma) goes to the active backend
+            d = dev if kind == "npma" else d
+            with _note(kind, dt), xupy.backend(dev):
                 _cmp("masked_all_like", [(x, n)], d)
 
     def test_masked_all_like_3d_and_empty(self, dev):
@@ -714,8 +717,9 @@ class TestLikeFunctions:
     @pytest.mark.parametrize("kind", _KINDS)
     def test_kinds(self, dev, kind):
         x, n, d = _inp(kind, _A23, _M23, dev)
+        d = dev if kind == "npma" else d  # host input goes to the active backend
         for name in ("zeros_like", "ones_like"):
-            with _note(kind, name):
+            with _note(kind, name), xupy.backend(dev):
                 assert_same(getattr(XMA, name)(x), getattr(np.ma, name)(n), dev=d)
 
     def test_dtype(self, dev):
@@ -749,7 +753,8 @@ class TestLikeFunctions:
     def test_empty_like_shape_dtype_mask(self, dev):
         for kind in _KINDS:
             x, n, d = _inp(kind, _A23, _M23, dev)
-            with _note(kind):
+            d = dev if kind == "npma" else d  # host input goes to the active backend
+            with _note(kind), xupy.backend(dev):
                 r = XMA.empty_like(x)
                 rn = np.ma.empty_like(n)
                 assert isinstance(r, XMA.MaskedArray)
