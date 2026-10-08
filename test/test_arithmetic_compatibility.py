@@ -15,26 +15,20 @@ import pytest
 import numpy as np
 from typing import Any
 
-try:
-    import cupy as cp
-except ImportError:
-    cp = None
-
-import xupy as _xupy_mod
-
-# CuPy may be importable while XuPy runs on CPU: skip unless XuPy is on GPU.
-HAS_CUPY = bool(_xupy_mod.on_gpu)
-
+import xupy  # noqa: F401  (populates sys.modules["xupy.ma"])
+from xupy import _core
 from xupy.ma import masked_array, MaskedArray, nomask, masked
 
-# Skip all tests if XuPy is not running on GPU
-pytestmark = pytest.mark.skipif(not HAS_CUPY, reason="XuPy is not running on GPU")
+# Array module of the XuPy data: cupy when a usable GPU is available (the
+# default backend then is the GPU), numpy otherwise.  The tests run on both.
+cp = _core._cupy
+xpm = cp if cp is not None else np
 
 
 # Helper functions
 def _to_numpy(arr: Any) -> np.ndarray:
     """Convert any array to NumPy array."""
-    if hasattr(arr, "get"):
+    if cp is not None and isinstance(arr, cp.ndarray):
         return cp.asnumpy(arr)
     return np.asarray(arr)
 
@@ -43,9 +37,7 @@ def _mask_to_numpy(mask: Any) -> np.ndarray:
     """Convert mask to NumPy array, handling nomask."""
     if mask is nomask:
         return np.array(False)  # Return False for nomask
-    if hasattr(mask, "get"):
-        return cp.asnumpy(mask)
-    return np.asarray(mask)
+    return _to_numpy(mask)
 
 
 def _get_mask_array(masked_arr: Any) -> np.ndarray:
@@ -96,34 +88,46 @@ class TestNaNInfinityDetection:
         result = arr.sqrt()
         
         result_mask = _to_numpy(result.mask)
-        assert result_mask[0] == True, "sqrt(-1) should be masked (NaN)"
+        assert result_mask[0] == True, "sqrt(-1) is outside the sqrt domain and is masked"
         assert result_mask[1] == False, "sqrt(4) should not be masked"
         assert result_mask[2] == True, "sqrt(-9) should be masked (NaN)"
 
     def test_nan_propagation_addition(self):
-        """Test that NaN in operands propagates correctly."""
+        """Test that NaN in operands propagates as data and is NOT auto-masked (numpy.ma parity)."""
         arr1 = masked_array([1.0, np.nan, 3.0], mask=[False, False, False])
         arr2 = masked_array([1.0, 2.0, 3.0], mask=[False, False, False])
         
         result = arr1 + arr2
         
-        # NaN should be detected and masked
-        result_mask = _to_numpy(result.mask)
-        assert result_mask[1] == True, "NaN in operand should result in masked output"
+        # Only domain errors are masked; genuine NaN flows through the data.
+        result_mask = _get_mask_array(result)
+        assert not result_mask.any(), "NaN in operand must not be auto-masked"
+        result_data = _to_numpy(result.data)
+        assert np.isnan(result_data[1])
+        np.testing.assert_array_equal(result_data[[0, 2]], [2.0, 6.0])
+
+        np_result = (np.ma.array([1.0, np.nan, 3.0], mask=[False, False, False])
+                     + np.ma.array([1.0, 2.0, 3.0], mask=[False, False, False]))
+        np.testing.assert_array_equal(result_mask, _get_mask_array(np_result))
+        np.testing.assert_array_equal(result_data, np_result.data)
 
     def test_infinity_detection(self):
-        """Test that infinity values are detected and masked."""
+        """Test that division by zero is masked by the divide domain (numpy.ma parity)."""
         arr1 = masked_array([1.0, 2.0], mask=[False, False])
         arr2 = masked_array([0.0, 0.0], mask=[False, False])
         
         result = arr1 / arr2
         
-        # Check that infinity is detected
+        # The domain masks the entries; the data of masked entries is the
+        # numerator (the inf/nan produced by the raw division is discarded).
         result_data = _to_numpy(result.data)
         result_mask = _to_numpy(result.mask)
-        
-        assert np.all(np.isinf(result_data) | np.isnan(result_data)), "Result should contain inf or nan"
-        assert np.all(result_mask), "All infinity results should be masked"
+
+        assert np.all(result_mask), "All division-by-zero results should be masked"
+        assert np.all(np.isfinite(result_data))
+        np_result = (np.ma.array([1.0, 2.0], mask=[False, False])
+                     / np.ma.array([0.0, 0.0], mask=[False, False]))
+        np.testing.assert_array_equal(result_data, np_result.data)
 
     def test_nan_in_multiplication(self):
         """Test NaN detection in multiplication."""
@@ -131,9 +135,12 @@ class TestNaNInfinityDetection:
         arr2 = masked_array([2.0, 2.0, 2.0], mask=[False, False, False])
         
         result = arr1 * arr2
-        result_mask = _to_numpy(result.mask)
         
-        assert result_mask[1] == True, "NaN * value should be masked"
+        # NaN is data, not a mask (numpy.ma parity)
+        assert not _get_mask_array(result).any(), "NaN * value must not be auto-masked"
+        result_data = _to_numpy(result.data)
+        assert np.isnan(result_data[1])
+        np.testing.assert_array_equal(result_data[[0, 2]], [2.0, 6.0])
 
     def test_nan_in_subtraction(self):
         """Test NaN detection in subtraction."""
@@ -141,9 +148,12 @@ class TestNaNInfinityDetection:
         arr2 = masked_array([1.0, 1.0, 1.0], mask=[False, False, False])
         
         result = arr1 - arr2
-        result_mask = _to_numpy(result.mask)
         
-        assert result_mask[1] == True, "NaN - value should be masked"
+        # NaN is data, not a mask (numpy.ma parity)
+        assert not _get_mask_array(result).any(), "NaN - value must not be auto-masked"
+        result_data = _to_numpy(result.data)
+        assert np.isnan(result_data[1])
+        np.testing.assert_array_equal(result_data[[0, 2]], [0.0, 2.0])
 
 
 class TestDivisionByZero:
@@ -225,8 +235,8 @@ class TestEmptyArrays:
 
     def test_addition_empty_arrays(self):
         """Test addition with empty arrays."""
-        arr1 = masked_array([], dtype=cp.float32)
-        arr2 = masked_array([], dtype=cp.float32)
+        arr1 = masked_array([], dtype=xpm.float32)
+        arr2 = masked_array([], dtype=xpm.float32)
         
         result = arr1 + arr2
         
@@ -237,7 +247,7 @@ class TestEmptyArrays:
 
     def test_scalar_with_empty_array(self):
         """Test scalar operation with empty array."""
-        arr = masked_array([], dtype=cp.float32)
+        arr = masked_array([], dtype=xpm.float32)
         result = arr + 1.0
         
         assert result.shape == (0,), "Result should be empty"
@@ -254,10 +264,9 @@ class TestScalarArrays:
         
         result = arr1 + arr2
         
-        assert result.shape == (), "Result should be scalar"
-        assert _to_numpy(result.data).item() == 8.0, "5 + 3 should equal 8"
-        # Both have nomask, so result should have nomask
-        assert result.mask is nomask, "Result should have nomask when both operands have nomask"
+        # A scalar (0-d) result is a numpy scalar, like numpy.ma
+        assert isinstance(result, np.generic), "Result should be a numpy scalar"
+        assert result == 8.0, "5 + 3 should equal 8"
 
     def test_scalar_array_division(self):
         """Test division with scalar arrays."""
@@ -266,10 +275,8 @@ class TestScalarArrays:
         
         result = arr1 / arr2
         
-        assert result.shape == (), "Result should be scalar"
-        assert _to_numpy(result.data).item() == 5.0, "10 / 2 should equal 5"
-        # Both have nomask, so result should have nomask (no division by zero)
-        assert result.mask is nomask, "Result should have nomask when both operands have nomask and no division by zero"
+        assert isinstance(result, np.generic), "Result should be a numpy scalar"
+        assert result == 5.0, "10 / 2 should equal 5"
 
     def test_scalar_array_division_by_zero(self):
         """Test scalar division by zero."""
@@ -278,19 +285,8 @@ class TestScalarArrays:
         
         result = arr1 / arr2
         
-        # Result should be masked due to division by zero
-        if result.shape == ():
-            # Scalar result - check if masked
-            if result.mask is nomask:
-                # If nomask, check if the data itself indicates an issue
-                result_data = _to_numpy(result.data)
-                assert np.isnan(result_data) or np.isinf(result_data), "Division by zero should produce NaN or inf"
-            else:
-                mask_val = _to_numpy(result.mask).item()
-                assert mask_val == True, "Division by zero should mask result"
-        else:
-            result_mask = _to_numpy(result.mask)
-            assert np.all(result_mask), "Division by zero should mask result"
+        # Scalar division by zero hits the divide domain: the result is the `masked` singleton
+        assert result is masked, "Division by zero should mask result"
 
 
 class TestBroadcasting:
