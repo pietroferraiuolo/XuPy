@@ -7,13 +7,21 @@ XuPy is a comprehensive Python package that provides GPU-accelerated masked arra
 ## Features
 
 - **GPU Acceleration**: Automatic GPU detection with CuPy fallback to NumPy
-- **Masked Arrays**: Full support for masked arrays with GPU acceleration
+- **Masked Arrays**: GPU masked arrays with the full `numpy.ma` API (every name of `numpy.ma.__all__` for numeric and bool dtypes) and `numpy.ma` semantics
 - **Statistical Functions**: Comprehensive statistical operations (mean, std, var, min, max, etc.)
 - **Array Manipulation**: Reshape, transpose, squeeze, expand_dims, and more
 - **Mathematical Functions**: Trigonometric, exponential, logarithmic, and rounding functions
 - **Random Generation**: Various random number generators (normal, uniform, etc.)
 - **Universal Functions**: Support for applying any CuPy/NumPy ufunc with mask preservation
 - **Performance**: Optimized for large-scale data processing on GPU
+
+## What's new in 2.0
+
+- **NumPy 2 namespace.** `xp` is a NumPy >= 2.0 namespace resolved per backend (CuPy on GPU, NumPy on CPU). Names removed in NumPy 2 raise `AttributeError` with a hint; `xp.float` and `xp.cfloat` are gone (use `xp.float64` / `xp.complex128`).
+- **`xupy.ma` behaves like `numpy.ma`** on NumPy and CuPy data: same masks, fill values, hard masks, `numpy.ma` domain rules (results outside a function domain are masked; no other NaN/Inf auto-masking), return kinds (numpy scalars or `masked`) and all the public functions, including `median`, `unique`/set operations, `cov`, `polyfit`, `clump_*`, `masked_where` & co. Structured/record/object dtypes are not supported (`NotImplementedError`).
+- **Device rule.** `masked_array` / `MaskedArray` / `array` / `*_like` move host input (NumPy, `numpy.ma`, lists) to the active backend; CuPy data and existing XuPy masked arrays never move implicitly, and operations follow the device of their operands.
+- **No host synchronisation** in element-wise operations, ufuncs, `@`, axis reductions, `sort`, `clip`, `where`, `concatenate`, `average`, ... (see `test/test_gpu_no_sync.py`). Only scalar results, `repr`, boolean-mask assignment and data-dependent output sizes (`unique`, `compressed`, `nonzero`, ...) synchronise.
+- **`MemoryContext` fixes** (MiB units, device restore, safe and fast cleanup) and a typed package (`py.typed`, `xupy/__init__.pyi`).
 
 ## Installation
 
@@ -92,6 +100,10 @@ XuPy automatically detects GPU availability and provides significant speedup for
 - **Small arrays (< 1000 elements)**: CPU (NumPy) may be faster due to GPU overhead
 - **Medium arrays (1000-10000 elements)**: GPU provides 2-5x speedup
 - **Large arrays (> 10000 elements)**: GPU provides 5-20x speedup depending on operation complexity
+
+### Benchmarks
+
+`python benchmarks/bench_ma.py` compares `xupy.ma` (GPU), raw CuPy and `numpy.ma` on a few array sizes (`--sizes 500,2000,4000`, `--repeat N`, `--no-numpy`); it is a standalone script and is not run in CI.
 
 ## GPU Requirements
 
