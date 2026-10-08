@@ -1060,11 +1060,20 @@ def _set_device(device_id: int) -> None:
 
 
 def _asnumpy_gpu(array):
+    if getattr(array, "_is_xupy_masked_constant", False):
+        return _np.ma.masked
+    if getattr(array, "_is_xupy_masked", False):
+        array = array._data
     return _cupy.asnumpy(array)
 
 
 def _asnumpy_cpu(array: _t.NDArray[_t.Any]) -> _t.Array:
-    """Identity for NumPy arrays; the data of a masked array."""
+    """Identity for NumPy arrays; the (host) data of a masked array."""
+    if getattr(array, "_is_xupy_masked_constant", False):
+        return _np.ma.masked
+    if getattr(array, "_is_xupy_masked", False):
+        array = array._data
+        return array if isinstance(array, _np.ndarray) else array.get()
     if isinstance(array, _np.ma.MaskedArray):
         return array.data
     return array
@@ -1077,6 +1086,8 @@ def _asmarray_gpu(array: _t.NDArray[_t.Any]) -> _t.MaskedArray:
     Args:
         array: Input array-like object (e.g. an XuPy masked array).
     """
+    if getattr(array, "_is_xupy_masked_constant", False):
+        return _np.ma.masked
     try:
         return array.asmarray()
     except AttributeError:
@@ -1087,6 +1098,10 @@ def _asmarray_cpu(array: _t.NDArray[_t.Any]) -> _t.MaskedArray:
     """Return a numpy masked array (unchanged if it already is one)."""
     if isinstance(array, _np.ma.MaskedArray):
         return array
+    if getattr(array, "_is_xupy_masked", False) or getattr(
+        array, "_is_xupy_masked_constant", False
+    ):
+        return array.asmarray()
     return _np.ma.masked_array(array)
 
 

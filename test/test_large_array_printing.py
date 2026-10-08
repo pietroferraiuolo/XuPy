@@ -3,16 +3,15 @@ Test for the large array printing bug fix
 """
 import pytest
 import xupy as xp
-if xp.on_gpu:
-    from xupy.ma import masked_array
+from xupy import _core
+from xupy.ma import masked_array
 import numpy as np
 
 
-@pytest.mark.skipif(not xp.on_gpu, reason="Requires GPU")
-@pytest.mark.slow
 class TestLargeArrayPrinting:
     """Tests for printing large masked arrays without segfault."""
     
+    @pytest.mark.slow  # 100M int64 elements (800 MB) + mask
     def test_large_array_print_no_segfault(self):
         """Test that printing a very large array doesn't cause segfault."""
         # Create a very large array (100M elements)
@@ -27,6 +26,7 @@ class TestLargeArrayPrinting:
         assert isinstance(result, str)
         assert len(result) > 0
         
+    @pytest.mark.slow  # 100M int64 elements (800 MB) + mask
     def test_large_array_repr_no_segfault(self):
         """Test that repr of a very large array doesn't cause segfault."""
         data = xp.arange(10000 * 10000).reshape(10000, 10000)
@@ -137,8 +137,7 @@ class TestLargeArrayPrinting:
             assert '99' in result or '90' in result  # Last row elements
 
 
-@pytest.mark.skipif(not xp.on_gpu, reason="Requires GPU")
-@pytest.mark.slow
+@pytest.mark.skipif(_core._cupy is None, reason="Requires a usable GPU (CuPy)")
 class TestPrintingMemoryEfficiency:
     """Tests for memory-efficient printing."""
     
@@ -151,8 +150,7 @@ class TestPrintingMemoryEfficiency:
         arr = masked_array(data, mask)
         
         # Get memory before print
-        if hasattr(xp.cuda, 'runtime'):
-            free_before, total = xp.cuda.runtime.memGetInfo()
+        free_before, total = _core._cupy.cuda.runtime.memGetInfo()
         
         # Print (should only transfer edges)
         result = str(arr)
