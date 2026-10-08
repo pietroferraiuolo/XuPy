@@ -62,7 +62,7 @@ def _zeros_mask(shape, xp):
 def _has_ellipsis(indx):
     if indx is Ellipsis:
         return True
-    return isinstance(indx, tuple) and any(i is Ellipsis for i in indx)
+    return isinstance(indx, tuple) and _builtins.any(i is Ellipsis for i in indx)
 
 
 _FIELD_INDEX_MSG = ("only integers, slices (`:`), ellipsis (`...`), numpy.newaxis (`None`) "
@@ -180,6 +180,10 @@ def set_fill_value(a, fill_value):
 # ---------------------------------------------------------------------------
 # class
 # ---------------------------------------------------------------------------
+class _UnsupportedAttributeError(AttributeError, NotImplementedError):
+    """Raised by unsupported *properties*: ``hasattr`` is False, yet it is a NotImplementedError."""
+
+
 class _XupyMaskedArray(_OpsMixin, _ReductionsMixin, _PrintMixin):
     """
     Masked array on numpy or cupy data, with the interface of ``numpy.ma``.
@@ -641,12 +645,29 @@ class _XupyMaskedArray(_OpsMixin, _ReductionsMixin, _PrintMixin):
         return self._apply(lambda a: a.diagonal(offset, axis1, axis2))
 
     def compress(self, condition, axis=None, out=None):
-        """Select slices along ``axis`` where ``condition`` is true (data and mask)."""
-        if out is not None:
-            raise NotImplementedError("compress(out=...) is not supported.")
+        """Select slices along ``axis`` where ``condition`` is true (data and mask).
+
+        The output size is data-dependent (device sync).  A condition longer than the
+        axis raises IndexError only if it selects (is True) beyond the axis, as numpy
+        (one more device sync, taken only in that over-long case).
+        """
         xp = self._xp
         cond = _backend.asarray(getdata(condition), xp)
-        return self._apply(lambda a: a.compress(cond, axis=axis), view=False)
+        if cond.ndim != 1:
+            if cond.ndim != 0:
+                raise ValueError("Condition must be a 1-d array")
+            cond = cond.reshape(1)
+        n = self.size if axis is None else self.shape[_np.lib.array_utils.normalize_axis_index(axis, self.ndim)]
+        if cond.shape[0] > n and bool(cond[n:].any()):
+            raise IndexError(f"index {n + int(xp.argmax(cond[n:]))} is out of bounds for axis 0 with size {n}")
+        res = self._apply(lambda a: a.compress(cond, axis=axis), view=False)
+        if out is None:
+            return res
+        if tuple(out.shape) != tuple(res.shape):
+            raise ValueError(f"output array does not match result of compress: {out.shape} vs {res.shape}")
+        raw = getattr(out, "_data", out)  # write into the data only: the mask of `out` is left as numpy does
+        raw[...] = res._data
+        return _wrap(raw, res._mask, like=self)
 
     def put(self, indices, values, mode="raise"):
         """Set storage-indexed locations to ``values`` (the mask follows, as numpy.ma)."""
@@ -656,7 +677,7 @@ class _XupyMaskedArray(_OpsMixin, _ReductionsMixin, _PrintMixin):
         vd = _backend.asarray(vd, xp)
         vm = vm if vm is nomask else _backend.asarray(vm, xp)
         if self._hardmask and self._mask is not nomask:
-            keep = ~self._mask[idx]
+            keep = ~self._mask.reshape(-1)[idx]
             idx = idx[keep]
             vd = xp.resize(vd, keep.shape)[keep]
             vm = vm if vm is nomask else xp.resize(vm, keep.shape)[keep]
@@ -711,6 +732,99 @@ class _XupyMaskedArray(_OpsMixin, _ReductionsMixin, _PrintMixin):
             with open(file, "wb") as fh:
                 pickle.dump(self, fh)
 
+    @property
+    def baseclass(self):
+        """Class of the underlying data (``numpy.ndarray`` or ``cupy.ndarray``; read-only)."""
+        return type(self._data)
+
+    def ids(self):
+        """Addresses of the data and mask areas (the id of `nomask` if there is no mask)."""
+        def addr(a):
+            return int(a.data.ptr) if _is_cupy_array(a) else int(a.ctypes.data)
+
+        return (addr(self._data), id(nomask) if self._mask is nomask else addr(self._mask))
+
+    def iscontiguous(self):
+        """True if the data is C-contiguous."""
+        return bool(self._data.flags.c_contiguous)
+
+    def byteswap(self, inplace=False):
+        """Swap the bytes of the data elements (each component of complex ones); the mask is kept."""
+        xp = self._xp
+        if xp is _np:
+            res = self._data.byteswap(inplace)
+        else:  # cupy has no byteswap: reverse the bytes of every element (component) on the device
+            comp = self._data.dtype.itemsize // (2 if self._data.dtype.kind == "c" else 1)
+            res = xp.array(self._data, copy=True, order="C")
+            if comp > 1 and res.size:
+                raw = res.reshape(-1).view(xp.uint8).reshape(-1, comp)
+                raw[...] = raw[:, ::-1].copy()
+            if inplace:
+                self._data[...] = res
+                res = self._data
+        if inplace:
+            return self
+        return _wrap(res, self._mask if self._mask is nomask else self._mask.copy(), like=self)
+
+    def trace(self, offset=0, axis1=0, axis2=1, dtype=None, out=None):
+        """Sum along a diagonal; masked values count as 0.
+
+        As numpy.ma (2.5), the result is converted with ``astype(dtype)``, so with
+        the default ``dtype=None`` it is float64.  A scalar result syncs.
+        """
+        xp = self._xp
+        tgt = None if out is None else getattr(out, "_data", out)
+        dt = _np.dtype(dtype)
+        if self._mask is nomask:
+            res = xp.asarray(self._data.trace(offset, axis1, axis2, out=tgt)).astype(dt)
+            if res.ndim == 0:
+                return _maybe_scalar(res, nomask)
+            if isinstance(out, _XupyMaskedArray):
+                return _wrap(res, out._mask if out._mask is nomask else out._mask.copy(), like=out)
+            return res if out is not None else _wrap(res, nomask)
+        diag = self.diagonal(offset, axis1, axis2).astype(dt).filled(0)
+        res = xp.asarray(diag.sum(axis=-1, out=tgt))
+        if out is not None:
+            return out
+        return _host_scalar(res) if res.ndim == 0 else res
+
+    def choose(self, choices, out=None, mode="raise"):
+        """``ndarray.choose`` on the raw data: the result keeps this array's mask (same shape only)."""
+        return _ops._choose_method(self, choices, out, mode)
+
+    # numpy ndarray internals that make no sense for numeric/bool device data
+    @staticmethod
+    def _unsupported(name):
+        raise NotImplementedError(f"{name} is not supported by xupy.ma: numeric and bool dtypes only")
+
+    @property
+    def ctypes(self):
+        # AttributeError too, so that hasattr / inspect.getmembers (help, completion) work
+        raise _UnsupportedAttributeError("ctypes is not supported by xupy.ma: numeric and bool dtypes only")
+
+    @property
+    def recordmask(self):
+        raise _UnsupportedAttributeError("recordmask is not supported by xupy.ma: numeric and bool dtypes only")
+
+    @recordmask.setter
+    def recordmask(self, value):
+        self._unsupported("recordmask")
+
+    def getfield(self, dtype=None, offset=0):
+        self._unsupported("getfield")
+
+    def setfield(self, val, dtype=None, offset=0):
+        self._unsupported("setfield")
+
+    def setflags(self, write=None, align=None, uic=None):
+        self._unsupported("setflags")
+
+    def toflex(self):
+        self._unsupported("toflex")
+
+    def torecords(self):
+        self._unsupported("torecords")
+
     def transpose(self, *axes):
         return self._apply(lambda a: a.transpose(*axes))
 
@@ -732,11 +846,11 @@ class _XupyMaskedArray(_OpsMixin, _ReductionsMixin, _PrintMixin):
         synchronisation (min/max of ``indices`` are read back, as cupy's own
         ``take`` only wraps); ``mode="clip"`` / ``"wrap"`` do not sync.
         """
-        xp = self._xp
         _np.empty(1).take(0, mode=mode)  # validates ``mode`` like ndarray.take (ValueError)
         mi = getmask(indices)
         if mi is not nomask:
             indices = indices.filled(0)
+        xp = _get_xp(self, indices)  # cupy indices never move to the host: host ``self`` follows them
         if not (isinstance(indices, _np.ndarray) or _is_cupy_array(indices) or hasattr(indices, "_data")):
             # python objects are cast like ``ndarray.take`` does (unsafe to intp): [] and 1.5 are valid
             indices = _np.asarray(indices).astype(_np.intp)
@@ -755,8 +869,8 @@ class _XupyMaskedArray(_OpsMixin, _ReductionsMixin, _PrintMixin):
                     bad = hi if hi >= n else lo
                     raise IndexError(f"index {bad} is out of bounds for axis {axis or 0} with size {n}")
             take = lambda a: a.take(indices, axis=axis)  # noqa: E731
-        d = take(self._data)
-        m = nomask if self._mask is nomask else take(self._mask)
+        d = take(_to_xp(self._data, xp))
+        m = nomask if self._mask is nomask else take(_to_xp(self._mask, xp))
         if mi is not nomask:
             m = _mask_or(m, mi, xp)
         if out is not None:
@@ -1167,7 +1281,7 @@ def mask_or(m1, m2, copy=False, shrink=True):
     if m2 is nomask or m2 is False:
         return make_mask(m1, copy=copy, shrink=shrink)
     xp = _get_xp(m1, m2)
-    if any(getdata(m).dtype.names is not None for m in (m1, m2)):
+    if _builtins.any(getdata(m).dtype.names is not None for m in (m1, m2)):
         raise NotImplementedError("structured masks are not supported: only numeric and boolean data.")
     out = xp.logical_or(_to_xp(m1, xp), _to_xp(m2, xp))
     return make_mask(out, copy=False, shrink=shrink)
@@ -1193,7 +1307,8 @@ def expand_dims(a, axis):
 # ---------------------------------------------------------------------------
 # assemble the public namespace with the operator/reduction functions
 # ---------------------------------------------------------------------------
-from . import _ops, _reductions  # noqa: E402
+from . import _funcs, _ops, _reductions  # noqa: E402
+from ._funcs import *  # noqa: E402,F401,F403
 from ._ops import *  # noqa: E402,F401,F403
 from ._reductions import *  # noqa: E402,F401,F403
 
@@ -1223,3 +1338,4 @@ __all__ = [
     "expand_dims",
 ]
 __all__ += list(getattr(_ops, "__all__", [])) + list(getattr(_reductions, "__all__", []))
+__all__ += list(_funcs.__all__)

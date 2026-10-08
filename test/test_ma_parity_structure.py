@@ -2317,11 +2317,13 @@ class TestPythonProtocols:
         for name in ("tobytes", "dump", "dumps", "tofile", "resize", "searchsorted", "partition",
                      "put", "compress", "diagonal"):
             assert hasattr(x, name) == hasattr(n, name), name
-        # ndarray-internal methods that are not forwarded (settled decision 5; XuPy is not an
-        # ndarray subclass and cupy has no equivalent): plain AttributeError.
-        for name in ("setflags", "setfield", "getfield", "byteswap", "choose"):
+        # structured/record/ctypes ndarray internals: explicit NotImplementedError
+        for name in ("setflags", "setfield", "getfield", "toflex", "torecords"):
             assert hasattr(n, name)
-            assert not hasattr(x, name), name
+            with pytest.raises(NotImplementedError):
+                getattr(x, name)(*([0] if name == "setfield" else []))
+        for name in ("byteswap", "choose"):
+            assert hasattr(x, name) and hasattr(n, name)
 
     def test_setting_new_attribute_like_numpy(self, dev):
         x, n = _mk((6,), dev)

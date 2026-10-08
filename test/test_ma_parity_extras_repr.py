@@ -1169,9 +1169,6 @@ _IN_KEYS = ["masked", "nomask", "mask_false", "plain", "list", "scalar", "int", 
 
 def _fn(name):
     fx = getattr(XMA, name, None)
-    if fx is None and name not in {"getmask", "getmaskarray", "getdata", "is_masked",
-                                   "isMaskedArray", "isMA", "is_mask", "concatenate"}:
-        pytest.xfail(f"xupy.ma.{name}: module-level numpy.ma function not provided until Phase 4")
     assert fx is not None, f"xupy.ma.{name} missing"
     return fx
 

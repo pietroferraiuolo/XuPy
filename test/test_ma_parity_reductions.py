@@ -680,9 +680,7 @@ class TestSort:
         assert_same(x, n, dev=dev)
 
     def test_sort_function_form(self, dev):
-        f = getattr(XMA, "sort", None)
-        if f is None:
-            pytest.xfail("xupy.ma.sort: module-level numpy.ma function not provided until Phase 4")
+        f = XMA.sort
         for kw in SORT_KW[:12]:
             x, n = pair("float64", (4, 5), "partial", dev)
             rx, rn = callf(f, np.ma.sort, x, n, kw=kw)
@@ -716,9 +714,7 @@ class TestSort:
                         check(rx, rn, dev, f"{dtype} {mkind} {kw}")
 
     def test_argsort_function_form(self, dev):
-        f = getattr(XMA, "argsort", None)
-        if f is None:
-            pytest.xfail("xupy.ma.argsort: module-level numpy.ma function not provided until Phase 4")
+        f = XMA.argsort
         x, n = pair("int32", (4, 5), "partial", dev)
         rx, rn = callf(f, np.ma.argsort, x, n, kw={"axis": 1, "kind": "stable"})
         check(rx, rn, dev)
@@ -784,9 +780,7 @@ class TestNonzeroClipCompressed:
         assert_same(ox, on, dev=dev, strict_nomask=False)  # see NO-SYNC note
 
     def test_clip_function_form(self, dev):
-        f = getattr(XMA, "clip", None)
-        if f is None:
-            pytest.xfail("xupy.ma.clip: module-level numpy.ma function not provided until Phase 4")
+        f = XMA.clip
         x, n = pair("float64", (3, 4), "partial", dev)
         rx, rn = callf(f, np.ma.clip, x, n, args=(-0.3, 0.3))
         check(rx, rn, dev)

@@ -28,7 +28,7 @@ import numpy as _np
 from . import _backend
 from ._singletons import MaskError, masked as _masked, nomask
 
-__all__: list = []
+__all__ = ["sort", "argsort"]
 
 _NV = _np._NoValue
 
@@ -500,6 +500,8 @@ class _ReductionsMixin:
                 info = _np.iinfo(data.dtype)
                 lo = None if type(lo) is int and lo <= info.min else lo
                 hi = None if type(hi) is int and hi >= info.max else hi
+            if lo is None and hi is None and data.dtype.kind == "b":
+                _np.positive(_np.empty(0, bool))  # numpy's identity clip is ufunc positive: raises for bool
             res = data
             if lo is not None:
                 res = xp.maximum(res, lo)
@@ -524,3 +526,76 @@ class _ReductionsMixin:
             return m1
         m2 = _backend.asarray(m2, xp)
         return m2 if m1 is nomask else xp.logical_or(m1, m2)
+
+
+# ---------------------------------------------------------------------------
+# module-level sort / argsort (numpy.ma.sort, numpy.ma.argsort)
+# ---------------------------------------------------------------------------
+def _asanyarray(a):
+    """Masked arrays pass; host/cupy arrays stay on their device; lists go to the active backend."""
+    c = _core()
+    if isinstance(a, c._XupyMaskedArray):
+        return a
+    if isinstance(a, _np.ma.MaskedArray) or getattr(a, "_is_xupy_masked_constant", False):
+        return c.MaskedArray(a)
+    if isinstance(a, _np.ndarray) or _backend.is_cupy_array(a):
+        return a
+    return _backend.default_xp().asarray(a)
+
+
+def sort(a, axis=-1, kind=None, order=None, endwith=True, fill_value=None, *,
+         stable=None, descending=None):
+    """Return a sorted copy of ``a``, masked values last (``endwith``); see `MaskedArray.sort`.
+
+    A plain array gives a plain sorted array, a masked array a masked one.  ``axis=None``
+    sorts the flattened array.  No host sync.
+    """
+    a = _asanyarray(a)
+    c = _core()
+    xp = _backend.get_xp(a)
+    a = a.copy() if isinstance(a, c._XupyMaskedArray) else xp.array(a, copy=True)
+    if axis is None:
+        a = a.flatten()
+        axis = 0
+    if isinstance(a, c._XupyMaskedArray):
+        a.sort(axis=axis, kind=kind, order=order, endwith=endwith, fill_value=fill_value,
+               stable=stable, descending=descending)
+    elif xp is _np:
+        kw = {k: v for k, v in (("stable", stable), ("descending", descending)) if v is not None}
+        a.sort(axis=axis, kind=kind, order=order, **kw)
+    else:
+        _check_sort_args(a.dtype, kind, order)
+        a.sort(axis=axis)
+        if descending:
+            a[...] = xp.flip(a, axis)
+    return a
+
+
+def argsort(a, axis=_NV, kind=None, order=None, endwith=True, fill_value=None, *,
+            stable=None, descending=None):
+    """Indices that sort ``a`` (masked values last); see `MaskedArray.argsort`.
+
+    With ``axis`` omitted a 2-d or larger array is flattened (FutureWarning), as numpy.ma.
+    """
+    a = _asanyarray(a)
+    if axis is _NV:
+        if a.ndim <= 1:
+            axis = -1
+        else:
+            _warnings.warn(
+                "In the future the default for argsort will be axis=-1, not the "
+                "current None, to match its documentation and np.argsort. "
+                "Explicitly pass -1 or None to silence this warning.",
+                _np.ma.core.MaskedArrayFutureWarning, stacklevel=2)
+            axis = None
+    if isinstance(a, _core()._XupyMaskedArray):
+        return a.argsort(axis=axis, kind=kind, order=order, endwith=endwith,
+                         fill_value=fill_value, stable=stable, descending=descending)
+    xp = _backend.get_xp(a)
+    if xp is _np:
+        kw = {k: v for k, v in (("stable", stable), ("descending", descending)) if v is not None}
+        return a.argsort(axis=axis, kind=kind, order=order, **kw)
+    if descending:
+        raise NotImplementedError("argsort(descending=True) of a plain cupy array is not supported")
+    _check_sort_args(a.dtype, kind, order)
+    return xp.argsort(a.ravel() if axis is None else a, axis=-1 if axis is None else axis)

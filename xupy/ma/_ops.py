@@ -44,8 +44,11 @@ import builtins as _builtins
 import functools as _functools
 import operator as _operator
 
+import inspect as _inspect
+
 import numpy as _np
 
+from . import _backend
 from ._backend import get_xp as _get_xp
 from ._backend import host_scalar as _host_scalar
 from ._backend import is_cupy_array as _is_cupy_array
@@ -59,7 +62,7 @@ from ._domains import (
 )
 from ._singletons import MaskError, masked, nomask
 
-__all__ = ["concatenate", "where", "dot", "power", "round", "round_"]
+__all__ = ["concatenate", "where", "dot", "power", "round", "round_", "clip", "choose", "ids", "trace"]
 
 _NV = _np._NoValue
 _NP_MASKED = _np.ma.MaskedArray
@@ -219,10 +222,29 @@ def _munary(name, a, *args, **kwargs):
     return c._wrap(res, m, like=_like(a))
 
 
+def _raise_numpy_error(name, a, b):
+    """Re-raise numpy's own TypeError for ufunc ``name`` on operands of unsupported dtype.
+
+    Evaluated on empty host arrays of the operand dtypes (no device access); returns if numpy accepts them.
+    """
+    c = _core()
+    e = [_np.empty(0, dtype=c._unpack(o)[0].dtype) for o in (a, b)]
+    try:
+        getattr(_np, name)(*e)
+    except TypeError:
+        raise
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _mbin(name, a, b, *args, **kwargs):
     """``numpy.ma`` masked binary operation (masks OR-ed, data kept under masks)."""
     c = _core()
-    xp, ((da, ma), (db, mb)) = _operands(a, b)
+    try:
+        xp, ((da, ma), (db, mb)) = _operands(a, b)
+    except TypeError:
+        _raise_numpy_error(name, a, b)
+        raise
     with _es():
         res = xp.asarray(getattr(xp, name)(da, db, *args, **kwargs))
     m = _or(ma, mb, res.shape, xp)
@@ -855,13 +877,7 @@ def _f_diagonal(a, offset=0, axis1=0, axis2=1):
 
 
 def _f_trace(a, offset=0, axis1=0, axis2=1, dtype=None, out=None):
-    if not _is_xma(a) or out is not None:
-        return NotImplemented
-    xp, d, m = _diag_parts(a, offset, axis1, axis2)
-    if m is not nomask:
-        d = xp.where(m, xp.zeros((), d.dtype), d)
-    r = d.sum(axis=-1, dtype=dtype)
-    return _core()._maybe_scalar(xp.asarray(r), nomask) if r.ndim == 0 else r
+    return a.trace(offset, axis1, axis2, dtype, out) if _is_xma(a) else NotImplemented
 
 
 def _f_expand_dims(a, axis):
@@ -1168,13 +1184,22 @@ class _OpsMixin:
 # ---------------------------------------------------------------------------
 # module-level masked functions (numpy.ma.add, numpy.ma.sqrt, ...)
 # ---------------------------------------------------------------------------
-def round_(a, decimals=0, out=None):
+def round(a, decimals=0, out=None):
     """Round an array to the given number of decimals (masked-array aware)."""
     c = _core()
     return (a if _is_xma(a) else c.MaskedArray(a)).round(decimals, out)
 
 
-round = round_
+def round_(a, decimals=0, out=None):
+    """Deprecated alias of `round` (deprecated in numpy.ma 2.5 too)."""
+    import warnings
+
+    warnings.warn(
+        "numpy.ma.round_ is deprecated. Use numpy.ma.round instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return round(a, decimals, out)
 
 
 def _module_func(name, kind):
@@ -1202,3 +1227,149 @@ for _k, (_n, _d, _fx, _fy) in DOMAINED_BINARY_OPS.items():
     globals()[_k] = _module_func(_n, "domained")
     __all__.append(_k)
 del _k, _n, _f, _d, _fx, _fy
+
+
+# ---------------------------------------------------------------------------
+# clip / choose / ids / trace (numpy.ma module-level functions)
+# ---------------------------------------------------------------------------
+def _as_xma(a):
+    """``asanyarray``: masked arrays pass; host/cupy arrays are wrapped where they are (no copy)."""
+    c = _core()
+    if _is_xma(a):
+        return a
+    if isinstance(a, _np.ndarray) or _is_cupy_array(a):
+        return c._wrap(a, nomask)
+    return c.MaskedArray(a)
+
+
+def clip(a, a_min=_NV, a_max=_NV, out=None, *, min=_NV, max=_NV, **kwargs):
+    """Clip the values of an array (``numpy.ma.clip``); returns a masked array.
+
+    Mask handling is that of `MaskedArray.clip`.  ``fill_value`` and ``hardmask``
+    (keyword-only) set those attributes of the result.
+    """
+    extra = {k: kwargs.pop(k) for k in ("fill_value", "hardmask") if k in kwargs}
+    if a_min is _NV and a_max is _NV:
+        a_min = None if min is _NV else min
+        a_max = None if max is _NV else max
+    elif a_min is _NV:
+        raise TypeError("clip() missing 1 required positional argument: 'a_min'")
+    elif a_max is _NV:
+        raise TypeError("clip() missing 1 required positional argument: 'a_max'")
+    elif min is not _NV or max is not _NV:
+        raise ValueError("Passing `min` or `max` keyword argument when "
+                         "`a_min` and `a_max` are provided is forbidden.")
+    res = _as_xma(a).clip(a_min, a_max, out=out, **kwargs)
+    if extra and _is_xma(res):
+        if out is not None:  # numpy sets them on a view, not on `out`
+            res = res.view()
+        if "fill_value" in extra:
+            res.fill_value = extra["fill_value"]
+        if "hardmask" in extra:
+            res._hardmask = bool(extra["hardmask"])
+    return res
+
+
+_clip_params = list(_inspect.signature(clip).parameters.values())
+clip.__signature__ = _inspect.Signature(
+    _clip_params[:-1]
+    + [_inspect.Parameter("fill_value", _inspect.Parameter.KEYWORD_ONLY, default=None),
+       _inspect.Parameter("hardmask", _inspect.Parameter.KEYWORD_ONLY, default=False)]
+    + _clip_params[-1:]
+)
+del _clip_params
+
+
+def _choose_raw(c, data, mode, out=None):
+    """``numpy.choose(c, data, mode=mode, out=out)`` for numpy or cupy arrays (``data``: a list).
+
+    cupy has no ``choose`` for a list of arrays, so it is done with ``take_along_axis`` on the
+    stacked, broadcast choices.  ``mode='raise'`` must look at the index values: that syncs
+    on cupy (``wrap`` and ``clip`` do not).
+    """
+    xp = _get_xp(c, out, *data)
+    if xp is _np:
+        return _np.choose(c, data, mode=mode, out=out)
+    if mode not in ("raise", "wrap", "clip"):
+        raise ValueError("clipmode not understood")
+    if not data:
+        raise ValueError("0-length sequence.")
+    if c.dtype.kind not in "biu":
+        raise TypeError(f"Cannot cast array data from dtype('{c.dtype}') to dtype('int64') "
+                        "according to the rule 'safe'")
+    n = len(data)
+    shape = _np.broadcast_shapes(c.shape, *(d.shape for d in data))
+    dt = xp.result_type(*data)
+    stacked = xp.stack([xp.broadcast_to(d.astype(dt, copy=False), shape) for d in data])
+    idx = xp.broadcast_to(c.astype(_np.intp, copy=False), shape)
+    if mode == "raise":
+        if idx.size and (int(idx.min()) < 0 or int(idx.max()) >= n):
+            raise ValueError("invalid entry in choice array")
+    elif mode == "wrap":
+        idx = idx % n
+    else:
+        idx = xp.clip(idx, 0, n - 1)
+    res = xp.take_along_axis(stacked, idx[None], axis=0)[0]
+    if out is None:
+        return res
+    if out.shape != res.shape:
+        raise ValueError(f"output array has shape {out.shape}, expected {res.shape}")
+    xp.copyto(out, res, casting="same_kind")
+    return out
+
+
+def _choose_method(self, choices, out, mode):
+    """``MaskedArray.choose`` (ndarray semantics): raw data of the choices, own mask kept."""
+    c = _core()
+    xp = _get_xp(self, out, *list(choices))
+    data = [_to_dev(_arr(c.getdata(x)), xp) for x in list(choices)]
+    raw = None if out is None else getattr(out, "_data", out)
+    res = _choose_raw(_to_dev(self._data, xp), data, mode, raw)
+    if out is not None:
+        return out
+    if res.ndim == 0:
+        return _host_scalar(res)
+    keep = self._mask is not nomask and res.shape == self._data.shape
+    return c._wrap(res, xp.array(_to_dev(self._mask, xp), copy=True) if keep else nomask, like=self)
+
+
+def choose(indices, choices, out=None, mode="raise"):
+    """Use an index array to construct a new array from a list of choices (``numpy.ma.choose``).
+
+    The result is masked where the chosen element or the index is masked.  An all-False
+    result mask is kept as an array (numpy.ma shrinks it to `nomask`, which would sync).
+    ``mode='raise'`` checks the index range on the device's data: that syncs on cupy.
+    """
+    c = _core()
+    choices = list(choices)
+    xp = _get_xp(indices, out, *choices)
+    idx = _to_dev(_arr(c.filled(indices, 0)), xp)
+    masks, data = [], []
+    for x in choices:
+        if x is masked:
+            masks.append(_np.ones((), bool))
+            data.append(_np.ones((), bool))
+        else:
+            m = c.getmask(x)
+            masks.append(_np.zeros((), bool) if m is nomask else m)
+            data.append(_arr(c.filled(x)))
+    masks = [_to_dev(_arr(m), xp) for m in masks]
+    data = [_to_dev(d, xp) for d in data]
+    om = _choose_raw(idx, masks, mode)
+    d = _choose_raw(idx, data, mode, None if out is None else getattr(out, "_data", out))
+    om = _shrink_cheap(_or(om, c.getmask(indices), _shape(d), xp))
+    if out is not None:
+        if _is_xma(out):
+            out.__setmask__(om)
+        return out
+    return c._wrap(d, om)
+
+
+def ids(a):
+    """Addresses of the data and mask areas of ``a`` (the id of `nomask` if unmasked)."""
+    return _as_xma(a).ids()
+
+
+def trace(a, offset=0, axis1=0, axis2=1, dtype=None, out=None):
+    """Sum along a diagonal of ``a``, masked values counting as 0 (see `MaskedArray.trace`)."""
+    return _as_xma(a).trace(offset, axis1, axis2, dtype, out)
