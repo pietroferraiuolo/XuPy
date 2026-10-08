@@ -21,7 +21,7 @@ import pytest
 import xupy
 
 from ._ma_parity_helpers import (
-    GPU_OK, XMA, assert_same, both, cp, host, make, mka, on_dev, to_dev, xp_of,
+    GPU_OK, NP_LT_22, NP_LT_25, XMA, assert_same, both, cp, host, make, mka, on_dev, to_dev, xp_of,
 )
 
 NM = XMA.nomask
@@ -642,6 +642,11 @@ class TestMaskFunctions:
                 "arr_arr": ("a", "b"), "arr_arr_all_false": ("z", "z")}[case]
         rn = np.ma.mask_or(args(spec[0], "n"), args(spec[1], "n"), copy=copy_, shrink=shrink)
         rx = XMA.mask_or(args(spec[0], "x"), args(spec[1], "x"), copy=copy_, shrink=shrink)
+        if NP_LT_22 and case == "arr_arr_all_false" and shrink:
+            # numpy < 2.2 (2.0.2) does not shrink an all-False result to nomask here
+            # (bug, fixed by 2.2); XuPy follows the shrinking behaviour.
+            assert rn is not NNM and rx is NM
+            return
         same_mask(rx, rn, dev if rn is not NNM else None)
 
     def test_mask_or_does_not_alias_inputs(self, dev):
@@ -1083,7 +1088,11 @@ class TestFillValueCheck:
                 x = mka(dev, to_dev(np.zeros(2, dt), dev))
                 n = np.ma.masked_array(np.zeros(2, dt))
                 fx, fn = x.fill_value, n.fill_value
-                assert type(fx) is type(fn)
+                if NP_LT_22 and dt in ("u1", "u8"):
+                    # numpy < 2.2 (2.0.2): default fill of an unsigned dtype is np.int64(999999)
+                    assert type(fx) is np.uint64 and type(fn) is np.int64
+                else:
+                    assert type(fx) is type(fn)
                 np.testing.assert_array_equal(np.asarray(fx), np.asarray(fn))
 
     def test_fill_value_validation(self, dev):
@@ -1115,7 +1124,11 @@ class TestFillValueCheck:
                         continue
                     x = mka(dev, to_dev(d.copy(), dev), fill_value=fv)
                     fx = x.fill_value
-                assert type(fx) is type(fn)
+                if NP_LT_22 and dt in ("u1", "u8"):
+                    # numpy < 2.2 (2.0.2): default fill of an unsigned dtype is np.int64(999999)
+                    assert type(fx) is np.uint64 and type(fn) is np.int64
+                else:
+                    assert type(fx) is type(fn)
                 np.testing.assert_array_equal(np.asarray(fx), np.asarray(fn))
 
     def test_fill_value_setter(self, dev):
@@ -2233,6 +2246,18 @@ class TestPythonProtocols:
                 return int(abs(a))
             return conv(a)
 
+        if NP_LT_22 and conv is bool and np.size(d) == 0:
+            # numpy < 2.2: bool(empty masked array) is False + DeprecationWarning; 2.2+ raises
+            # ValueError, which XuPy follows.
+            with pytest.raises(ValueError):
+                bool(x)
+            return
+        if NP_LT_25 and conv is complex and np.ndim(d) > 0 and np.size(d) == 1:
+            # numpy < 2.5: complex() of a 1-element array with ndim > 0 works with a
+            # DeprecationWarning; 2.5 expired it (TypeError, only 0-d), which XuPy follows.
+            with pytest.raises(TypeError):
+                complex(x)
+            return
         with warnings.catch_warnings(record=True) as wn:
             warnings.simplefilter("always")
             try:
@@ -2301,7 +2326,10 @@ class TestPythonProtocols:
         for name in ["itemset", "newbyteorder", "tostring", "__cuda_array_interface__",
                      "bogus", "get", "cuda", "_data_typo"]:
             with case(name):
-                assert not hasattr(n, name)
+                if name != "tostring" or not hasattr(n, name):
+                    # ndarray.tostring (deprecated alias of tobytes) still exists in numpy < 2.3;
+                    # XuPy never had it.  For every other name numpy must lack it, as before.
+                    assert not hasattr(n, name)
                 assert not hasattr(x, name)
                 with pytest.raises(AttributeError) as ex:
                     getattr(x, name)
@@ -2317,11 +2345,13 @@ class TestPythonProtocols:
         for name in ("tobytes", "dump", "dumps", "tofile", "resize", "searchsorted", "partition",
                      "put", "compress", "diagonal"):
             assert hasattr(x, name) == hasattr(n, name), name
-        # ndarray-internal methods that are not forwarded (settled decision 5; XuPy is not an
-        # ndarray subclass and cupy has no equivalent): plain AttributeError.
-        for name in ("setflags", "setfield", "getfield", "byteswap", "choose"):
+        # structured/record/ctypes ndarray internals: explicit NotImplementedError
+        for name in ("setflags", "setfield", "getfield", "toflex", "torecords"):
             assert hasattr(n, name)
-            assert not hasattr(x, name), name
+            with pytest.raises(NotImplementedError):
+                getattr(x, name)(*([0] if name == "setfield" else []))
+        for name in ("byteswap", "choose"):
+            assert hasattr(x, name) and hasattr(n, name)
 
     def test_setting_new_attribute_like_numpy(self, dev):
         x, n = _mk((6,), dev)
@@ -2689,6 +2719,10 @@ class TestMaskedConstantNumpySurface:
     def test_matches_numpy_ma_masked(self, name):
         f = _MASKED_SURFACE[name]
         got, exp = _outcome(f, MSK), _outcome(f, NMSK)
+        if NP_LT_22 and name == "np.sqrt" and exp == ("ok", ("array", (), "float64", False)):
+            # numpy < 2.2 (2.0.2): np.sqrt(np.ma.masked) is an UNMASKED 0-d array (a bug; 2.2+
+            # returns `masked`).  XuPy returns `masked`.
+            exp = ("ok", "masked")
         if got[0] == "ok" and exp[0] == "ok" and isinstance(exp[1], tuple) and exp[1][:1] == ("int",):
             exp = ("ok", ("int", exp[1][1]))
             got = ("ok", ("int", got[1][1]))

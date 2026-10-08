@@ -76,9 +76,12 @@ def call(x, n, name, args=(), kw=None, kwx=None, argsx=None):
     kwx = kwn if kwx is None else kwx
     argsx = args if argsx is None else argsx
     try:
-        rn = getattr(n, name)(*args, **kwn)
+        rn = getattr(n, name)(*args, **_H.np_kw(kwn))
     except Exception as e:  # noqa: BLE001
-        with pytest.raises(type(e)):
+        if _H.is_np_uint_fill_bug(e):   # numpy 2.1 bug: no oracle, XuPy must just work
+            getattr(x, name)(*argsx, **kwx)
+            return None, None
+        with pytest.raises(_H.expected_exc(e, kwn)):
             getattr(x, name)(*argsx, **kwx)
         return None, None
     return getattr(x, name)(*argsx, **kwx), rn
@@ -88,9 +91,9 @@ def callf(fx, fn, x, n, args=(), kw=None, kwx=None):
     kwn = dict(kw or {})
     kwx = kwn if kwx is None else kwx
     try:
-        rn = fn(n, *args, **kwn)
+        rn = fn(n, *args, **_H.np_kw(kwn))
     except Exception as e:  # noqa: BLE001
-        with pytest.raises(type(e)):
+        with pytest.raises(_H.expected_exc(e, kwn)):
             fx(x, *args, **kwx)
         return None, None
     return fx(x, *args, **kwx), rn
@@ -148,9 +151,9 @@ def sn(name):
 def inplace(x, n, name, kw):
     """In-place method on both; True if it ran (and returned None) on both."""
     try:
-        r = getattr(n, name)(**kw)
+        r = getattr(n, name)(**_H.np_kw(kw))
     except Exception as e:  # noqa: BLE001
-        with pytest.raises(type(e)):
+        with pytest.raises(_H.expected_exc(e, kw)):
             getattr(x, name)(**kw)
         return False
     assert r is None
@@ -680,9 +683,7 @@ class TestSort:
         assert_same(x, n, dev=dev)
 
     def test_sort_function_form(self, dev):
-        f = getattr(XMA, "sort", None)
-        if f is None:
-            pytest.xfail("xupy.ma.sort: module-level numpy.ma function not provided until Phase 4")
+        f = XMA.sort
         for kw in SORT_KW[:12]:
             x, n = pair("float64", (4, 5), "partial", dev)
             rx, rn = callf(f, np.ma.sort, x, n, kw=kw)
@@ -716,9 +717,7 @@ class TestSort:
                         check(rx, rn, dev, f"{dtype} {mkind} {kw}")
 
     def test_argsort_function_form(self, dev):
-        f = getattr(XMA, "argsort", None)
-        if f is None:
-            pytest.xfail("xupy.ma.argsort: module-level numpy.ma function not provided until Phase 4")
+        f = XMA.argsort
         x, n = pair("int32", (4, 5), "partial", dev)
         rx, rn = callf(f, np.ma.argsort, x, n, kw={"axis": 1, "kind": "stable"})
         check(rx, rn, dev)
@@ -784,9 +783,7 @@ class TestNonzeroClipCompressed:
         assert_same(ox, on, dev=dev, strict_nomask=False)  # see NO-SYNC note
 
     def test_clip_function_form(self, dev):
-        f = getattr(XMA, "clip", None)
-        if f is None:
-            pytest.xfail("xupy.ma.clip: module-level numpy.ma function not provided until Phase 4")
+        f = XMA.clip
         x, n = pair("float64", (3, 4), "partial", dev)
         rx, rn = callf(f, np.ma.clip, x, n, args=(-0.3, 0.3))
         check(rx, rn, dev)

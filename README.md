@@ -7,13 +7,21 @@ XuPy is a comprehensive Python package that provides GPU-accelerated masked arra
 ## Features
 
 - **GPU Acceleration**: Automatic GPU detection with CuPy fallback to NumPy
-- **Masked Arrays**: Full support for masked arrays with GPU acceleration
+- **Masked Arrays**: GPU masked arrays with the full `numpy.ma` API (every name of `numpy.ma.__all__` for numeric and bool dtypes) and `numpy.ma` semantics
 - **Statistical Functions**: Comprehensive statistical operations (mean, std, var, min, max, etc.)
 - **Array Manipulation**: Reshape, transpose, squeeze, expand_dims, and more
 - **Mathematical Functions**: Trigonometric, exponential, logarithmic, and rounding functions
 - **Random Generation**: Various random number generators (normal, uniform, etc.)
 - **Universal Functions**: Support for applying any CuPy/NumPy ufunc with mask preservation
 - **Performance**: Optimized for large-scale data processing on GPU
+
+## What's new in 2.0
+
+- **NumPy 2 namespace.** `xp` is a NumPy >= 2.0 namespace resolved per backend (CuPy on GPU, NumPy on CPU). Names removed in NumPy 2 raise `AttributeError` with a hint; `xp.float` and `xp.cfloat` are gone (use `xp.float64` / `xp.complex128`).
+- **`xupy.ma` behaves like `numpy.ma`** on NumPy and CuPy data: same masks, fill values, hard masks, `numpy.ma` domain rules (results outside a function domain are masked; no other NaN/Inf auto-masking), return kinds (numpy scalars or `masked`) and all the public functions, including `median`, `unique`/set operations, `cov`, `polyfit`, `clump_*`, `masked_where` & co. Structured/record/object dtypes are not supported (`NotImplementedError`).
+- **Device rule.** `masked_array` / `MaskedArray` / `array` / `*_like` move host input (NumPy, `numpy.ma`, lists) to the active backend; CuPy data and existing XuPy masked arrays never move implicitly, and operations follow the device of their operands.
+- **No host synchronisation** in element-wise operations, ufuncs, `@`, axis reductions, `sort`, `clip`, `where`, `concatenate`, `average`, ... (see `test/test_gpu_no_sync.py`). Only scalar results, `repr`, boolean-mask assignment and data-dependent output sizes (`unique`, `compressed`, `nonzero`, ...) synchronise.
+- **`MemoryContext` fixes** (MiB units, device restore, safe and fast cleanup) and a typed package (`py.typed`, `xupy/__init__.pyi`).
 
 ## Installation
 
@@ -77,7 +85,7 @@ xp.on_gpu                    # live: reflects the active backend
 - `xp.ma` follows the backend: XuPy's GPU masked arrays on GPU, `numpy.ma` on CPU. `xp.np` and `xp.npma` are always `numpy` and `numpy.ma`.
 - `from xupy import on_gpu` (and `from xupy import *`) is a snapshot taken at import time; use `xp.on_gpu` for the live value.
 - `use_cpu()`/`use_gpu()` change the default for *all* threads. A switch from another thread while a computation is running can split it across backends; for concurrent code prefer `with xp.backend(...)`, which only affects the current thread/task.
-- Masked arrays from `xupy.ma` resolve the backend on each operation, so use them under the backend that was active when they were created (e.g. don't operate on a GPU masked array inside `with xp.backend("cpu")`).
+- `xupy.ma` masked arrays follow their data: creating one from host data (NumPy arrays, `numpy.ma` arrays, lists) places it on the active backend (the GPU in GPU mode); an existing masked array never moves implicitly, and operations run on the device of their operands (a GPU masked array stays on the GPU even inside `with xp.backend("cpu")`). Use `a.to_device("cpu")` / `"gpu"` to move one explicitly.
 - Because `xupy.ma` follows the backend, `import xupy.ma.core as mc` yields `numpy.ma.core` on CPU; use `from xupy.ma import core` or `sys.modules["xupy.ma"]` to always reach XuPy's module.
 - Names removed in NumPy 2 (`NaN`, `float_`, `in1d`, `trapz`, ...) raise `AttributeError` with a hint on both backends, e.g. `xupy has no attribute 'NaN': removed in NumPy 2.0, use 'nan'`.
 - NumPy 2 names CuPy lacks are shimmed on GPU (`vecdot`, `unstack`, `sort(stable=, descending=)`, `unique(sorted=)`, `errstate`, `linalg.vector_norm`, ...). Host-only names with no CuPy equivalent (`emath`, `strings`, `char`, `rec`, ...) raise an `AttributeError` that points to `xp.backend("cpu")` / `xp.asnumpy()`.
@@ -92,6 +100,10 @@ XuPy automatically detects GPU availability and provides significant speedup for
 - **Small arrays (< 1000 elements)**: CPU (NumPy) may be faster due to GPU overhead
 - **Medium arrays (1000-10000 elements)**: GPU provides 2-5x speedup
 - **Large arrays (> 10000 elements)**: GPU provides 5-20x speedup depending on operation complexity
+
+### Benchmarks
+
+`python benchmarks/bench_ma.py` compares `xupy.ma` (GPU), raw CuPy and `numpy.ma` on a few array sizes (`--sizes 500,2000,4000`, `--repeat N`, `--no-numpy`); it is a standalone script and is not run in CI.
 
 ## GPU Requirements
 
@@ -135,7 +147,8 @@ with xp.MemoryContext() as ctx:
 with xp.MemoryContext(memory_threshold=0.8, auto_cleanup=True) as ctx:
     # Monitor memory usage
     mem_info = ctx.get_memory_info()
-    print(f"GPU Memory: {mem_info['used'] / (1024**3):.2f} GB")
+    # 'total', 'free' and 'used' are in MiB (1024**2 bytes)
+    print(f"GPU Memory: {mem_info['used']:.2f} MiB")
     
     # Aggressive cleanup when needed
     if ctx.check_memory_pressure():
@@ -152,8 +165,12 @@ with xp.MemoryContext(memory_threshold=0.8, auto_cleanup=True) as ctx:
 - **Pressure Detection**: Automatic cleanup when memory usage is high
 - **Aggressive Cleanup**: Force garbage collection and cache clearing
 - **Emergency Cleanup**: Nuclear option for out-of-memory situations
-- **Object Tracking**: Track GPU objects for proper cleanup
+- **Safe Cleanup**: Only garbage collection and memory-pool freeing; user objects are never modified
 - **Memory History**: Keep history of memory usage over time
+
+All memory figures are binary: `MB` / `MiB` = 1024**2 bytes and `GB` / `GiB` = 1024**3 bytes
+(this also holds for `xp.array_size(shape, dtype, out_unit='MB')`, which accepts `'B'`, `'KB'`, `'MB'`, `'GB'`).
+The previous device is always restored when the context exits.
 
 ## Documentation
 

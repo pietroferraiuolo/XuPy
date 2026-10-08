@@ -32,8 +32,8 @@ __all__ = ["use_cpu", "use_gpu", "backend", "NumpyContext"]
 
 _log = _logging.getLogger("xupy")
 
-_B2mb_ = 1024 * 1000  # using MB = 1,000,000 bytes
-_Btgb_ = 1024 * 1000 * 1000  # using GB = 1,000,000,000 bytes
+_B2mb_ = 1024**2  # bytes per MiB (all "MB" labels/units in XuPy mean MiB)
+_Btgb_ = 1024**3  # bytes per GiB
 
 _GPU_AVAILABLE = False
 _MULTIGPU = False
@@ -85,14 +85,14 @@ def _gpu_banner(cp, n: int) -> str:
         for g in range(n):
             p = cp.cuda.runtime.getDeviceProperties(g)
             lines.append(
-                f"       - gpu_id {g} : {p['name'].decode()} | Memory = {p['totalGlobalMem'] / _B2mb_:.2f} MB"
+                f"       - gpu_id {g} : {p['name'].decode()} | Memory = {p['totalGlobalMem'] / _B2mb_:.2f} MiB"
                 f" | Compute Capability = {p['major']}.{p['minor']}"
             )
     else:
         p = cp.cuda.runtime.getDeviceProperties(0)
         lines = [
             f"[XuPy] Device {cp.cuda.runtime.getDevice()} available - GPU : `{p['name'].decode()}`",
-            f"       Memory = {p['totalGlobalMem'] / _B2mb_:.2f} MB | Compute Capability = {p['major']}.{p['minor']}",
+            f"       Memory = {p['totalGlobalMem'] / _B2mb_:.2f} MiB | Compute Capability = {p['major']}.{p['minor']}",
         ]
     lines.append(f"       Using CuPy {cp.__version__} for acceleration.")
     return "\n".join(lines)
@@ -148,48 +148,84 @@ def _active_gpu() -> bool:
     return _global_gpu if o is None else o
 
 
+_SIZE_UNITS = {
+    "B": 1,
+    "KB": 1024, "KIB": 1024,
+    "MB": _B2mb_, "MIB": _B2mb_,
+    "GB": _Btgb_, "GIB": _Btgb_,
+}
+
+
 def _array_size(
-    shape: tuple[int] | list[tuple[int]],
+    shape: tuple[int, ...] | list[tuple[int, ...]],
     dtype: _t.DTypeLike = _np.float32,
-    out_unit: str = 'MB',
+    out_unit: str = "MB",
 ) -> int:
     """
-    Computes the expected allocated size on GPU of an array with size `shape` 
+    Computes the expected allocated size of an array with shape `shape`
     and data type `dtype`.
 
     Parameters
     ----------
-    shape : tuple[int] | list[tuple[int]]
-        The shape of the array. Can input multiple shapes as a list, and the
-        result will be the total size of all arrays combined.
+    shape : tuple[int, ...] | list[tuple[int, ...]]
+        The shape of the array (an int is a 1-d shape, ``()`` is a scalar with
+        one element). Can input multiple shapes as a list, and the result will
+        be the total size of all arrays combined. NumPy integers are accepted.
     dtype : DTypeLike, optional
         The data type of the array elements (default: float32).
     out_unit : str, optional
-        The unit for the output size. Can be 'MB' or 'GB' (default: 'MB').
+        Output unit, case-insensitive: ``'B'``, ``'KB'``, ``'MB'`` or ``'GB'``
+        (default: ``'MB'``). Units are binary: MB = MiB = 1024**2 bytes and
+        GB = GiB = 1024**3 bytes (``'KiB'``/``'MiB'``/``'GiB'`` are aliases).
 
     Returns
     -------
     size : int
-        The size of the array in the specified unit.
+        The total size in the requested unit. The total number of bytes is
+        computed exactly and truncated once, at the end.
+
+    Raises
+    ------
+    ValueError
+        For an unknown `out_unit` or a negative dimension.
+    TypeError
+        If a shape entry is not an integer.
 
     Examples
     --------
     >>> import xupy as xp
-    >>> arr = xp.array([1, 2, 3])
-    >>> xp.array_size(arr)
-    12  # 3 elements * 4 bytes per int32
+    >>> xp.array_size((1000, 1000))   # float32: 4,000,000 bytes
+    3
+    >>> xp.array_size((1024, 1024), dtype="float64", out_unit="B")
+    8388608
     """
-    norm = _B2mb_ if out_unit == 'MB' else _Btgb_
-    if isinstance(shape, tuple):
-        if isinstance(shape[0], int):
-            shape = [shape]  # single shape case
-    size = []
-    for s in shape:
-        itemsize = _np.dtype(dtype).itemsize
-        num_elements = _np.prod(s)
-        size_bytes = num_elements * itemsize
-        size.append(int(size_bytes / norm))
-    return int(_np.sum(size))
+    unit = out_unit.upper() if isinstance(out_unit, str) else out_unit
+    if unit not in _SIZE_UNITS:
+        raise ValueError(
+            f"Unknown out_unit {out_unit!r}; expected one of 'B', 'KB', 'MB', 'GB'."
+        )
+    if _as_index(shape) is not None:
+        shapes = [(shape,)]
+    elif (isinstance(shape, tuple) or (isinstance(shape, list) and len(shape) > 0)) and all(
+        _as_index(d) is not None for d in shape
+    ):
+        shapes = [tuple(shape)]  # a single shape (including the empty one)
+    else:
+        shapes = [(s,) if _as_index(s) is not None else tuple(s) for s in shape]
+    itemsize = _np.dtype(dtype).itemsize
+    total = 0
+    for shp in shapes:
+        n = 1
+        for d in shp:
+            d = _as_index(d)
+            if d is None:
+                raise TypeError("shape entries must be integers")
+            if d < 0:
+                raise ValueError("negative dimensions are not allowed")
+            n *= d
+        total += n * itemsize
+    return total // _SIZE_UNITS[unit]
+
 
 # --- NUMPY Context manager ---
 class NumpyContext:
@@ -315,6 +351,8 @@ class _CPUMemoryContext:
         """Return basic CPU/RAM memory information where available.
 
         Uses ``psutil`` when installed; otherwise returns a minimal dict.
+        ``total``, ``free`` and ``used`` are in MiB (1024**2 bytes), like the
+        GPU context.
         """
         info: dict = {"device": "cpu"}
         try:
@@ -322,9 +360,9 @@ class _CPUMemoryContext:
             vm = psutil.virtual_memory()
             info.update(
                 {
-                    "total": vm.total,
-                    "free": vm.available,
-                    "used": vm.used,
+                    "total": vm.total / _B2mb_,
+                    "free": vm.available / _B2mb_,
+                    "used": vm.used / _B2mb_,
                     "memory_percent": vm.percent / 100.0,
                 }
             )
@@ -359,10 +397,10 @@ class _CPUMemoryContext:
         """String representation of the CPU memory context."""
         mem_info = self.get_memory_info()
         if "used" in mem_info:
-            used_mb = mem_info["used"] / (1024 * 1000)
-            total_mb = mem_info["total"] / (1024 * 1000)
+            used_mb = mem_info["used"]
+            total_mb = mem_info["total"]
             percent = mem_info["memory_percent"] * 100
-            return f"MemoryContext(device=cpu, memory={used_mb:.2f}/{total_mb:.2f} MB ({percent:.1f}%))"
+            return f"MemoryContext(device=cpu, memory={used_mb:.2f}/{total_mb:.2f} MiB ({percent:.1f}%))"
         return "MemoryContext(device=cpu)"
 
 
@@ -423,7 +461,6 @@ if _GPU_AVAILABLE:
 
             self._device_ctx = None
             self._original_device = None
-            self._gpu_objects = []  # Track GPU objects for cleanup
             self._memory_history = []
             self._start_time = None
             self._initial_memory = 0
@@ -458,20 +495,11 @@ if _GPU_AVAILABLE:
             return self
 
         def __exit__(self, exc_type, exc_val, exc_tb):
-            """Exit the memory context with cleanup."""
+            """Exit the memory context with cleanup (always restores the device)."""
             try:
                 if self.auto_cleanup or self.force_cleanup:
+                    # gc + memory pools; never touches user objects
                     self.aggressive_cleanup()
-
-                    # Cleanup tracked GPU objects
-                    self._cleanup_gpu_objects()
-
-                    # Restore original device
-                    if _GPU_AVAILABLE and self._device_ctx is not None:
-                        try:
-                            self._device_ctx.__exit__(exc_type, exc_val, exc_tb)
-                        except Exception as e:
-                            print(f"Warning: Error restoring device context: {e}")
 
                 # Final memory report
                 if self._print_report:
@@ -482,7 +510,7 @@ if _GPU_AVAILABLE:
                             memory_delta = final_mem["used"] - self._initial_memory
                             print(f"[MemoryContext] Session completed in {duration:.2f}s")
                             print(
-                                f"[MemoryContext] Memory delta: {memory_delta / (_B2mb_):.2f} MB"
+                                f"[MemoryContext] Memory delta: {memory_delta:.2f} MiB"
                             )
                             if self._cleanup_count > 0:
                                 print(
@@ -491,24 +519,45 @@ if _GPU_AVAILABLE:
 
             except Exception as e:
                 print(f"Warning: Error during memory context cleanup: {e}")
+            finally:
+                self._restore_device(exc_type, exc_val, exc_tb)
+
+        def _restore_device(self, exc_type=None, exc_val=None, exc_tb=None):
+            """Restore the device that was current on entry (cleanup or not)."""
+            if self._device_ctx is not None:
+                try:
+                    self._device_ctx.__exit__(exc_type, exc_val, exc_tb)
+                except Exception as e:
+                    print(f"Warning: Error restoring device context: {e}")
+                self._device_ctx = None
+            if self._original_device is not None:
+                try:
+                    if _xp.cuda.runtime.getDevice() != self._original_device:
+                        _xp.cuda.runtime.setDevice(self._original_device)
+                except Exception as e:
+                    print(f"Warning: Error restoring device {self._original_device}: {e}")
 
         def track_object(self, obj):
-            """Track a GPU object for cleanup."""
-            if hasattr(obj, "data") and hasattr(obj.data, "device"):
-                self._gpu_objects.append(obj)
+            """Kept for API compatibility; no reference to ``obj`` is held.
+
+            Tracking used to keep user objects alive and blank their ``data``
+            on exit; the context no longer touches user objects at all.
+            """
+            pass
 
         def _cleanup_gpu_objects(self):
-            """Clean up tracked GPU objects."""
-            for obj in self._gpu_objects:
-                try:
-                    # Clear references to GPU data
-                    if hasattr(obj, "data"):
-                        obj.data = None
-                    if hasattr(obj, "mask"):
-                        obj.mask = None
-                except Exception:
-                    pass
-            self._gpu_objects.clear()
+            """Cheap, safe cleanup: garbage collection and freeing the memory pools.
+
+            Never modifies user objects.
+            """
+            import gc
+
+            gc.collect()
+            try:
+                _xp.get_default_memory_pool().free_all_blocks()
+                _xp.get_default_pinned_memory_pool().free_all_blocks()
+            except Exception:
+                pass
 
         def clear_cache(self):
             """Clear GPU memory pools (safely)."""
@@ -516,33 +565,23 @@ if _GPU_AVAILABLE:
                 return
 
             try:
-                # Ensure all kernels are finished
-                _xp.cuda.runtime.deviceSynchronize()
+                # Make sure pending kernels are done before freeing blocks
+                _xp.cuda.Device().synchronize()
             except Exception:
                 pass
 
             try:
-                # Free default memory pool
-                mempool = _xp.get_default_memory_pool()
-                mempool.free_all_blocks()
+                _xp.get_default_memory_pool().free_all_blocks()
             except Exception as e:
                 print(f"Warning: Could not free default memory pool: {e}")
 
             try:
-                # Free pinned memory pool
-                pinned_pool = _xp.get_default_pinned_memory_pool()
-                pinned_pool.free_all_blocks()
+                _xp.get_default_pinned_memory_pool().free_all_blocks()
             except Exception as e:
                 print(f"Warning: Could not free pinned memory pool: {e}")
 
-            try:
-                # Synchronize again
-                _xp.cuda.runtime.deviceSynchronize()
-            except Exception:
-                pass
-
         def aggressive_cleanup(self):
-            """Perform aggressive memory cleanup."""
+            """Perform aggressive memory cleanup (no sleeps, one synchronize)."""
             if not _GPU_AVAILABLE:
                 return
 
@@ -550,65 +589,23 @@ if _GPU_AVAILABLE:
                 print("[MemoryContext] Performing aggressive memory cleanup...")
             self._cleanup_count += 1
 
-            # Force garbage collection
             import gc
 
             gc.collect()
 
-            # Clear CuPy caches
             try:
-                _xp.clear_memo_cache()
+                _xp.clear_memo()
             except Exception:
                 pass
 
-            # Clear memory pools multiple times with forced deallocation
-            for _ in range(3):
-                self.clear_cache()
-                _time.sleep(0.01)
+            self.clear_cache()
 
-            # Try to free unused memory more aggressively
             try:
-                _xp.cuda.runtime.deviceSynchronize()
-                # Force deallocation of unused memory
-                _xp.cuda.runtime.free(0)
-            except Exception:
-                pass
-
-            # Force another garbage collection
-            gc.collect()
-
-            # Additional aggressive measures
-            try:
-                # Try to force memory pool deallocation
                 mempool = _xp.get_default_memory_pool()
-                # Force garbage collection on the memory pool
-                mempool.free_all_blocks()
-                # Try to shrink the pool
                 if hasattr(mempool, "shrink"):
                     mempool.shrink()
             except Exception as e:
                 print(f"Warning: Could not shrink memory pool: {e}")
-
-            # Try to clear any cached arrays
-            try:
-                # Clear any cached computations
-                _xp.clear_memo_cache()
-                # Force synchronization
-                _xp.cuda.runtime.deviceSynchronize()
-            except Exception:
-                pass
-
-            # Try direct CUDA memory management
-            try:
-                # Force CUDA to free unused memory
-                _xp.cuda.runtime.deviceSynchronize()
-                # Try to trigger memory defragmentation
-                # free, total = _xp.cuda.runtime.memGetInfo()
-                # print(
-                #     f"[MemoryContext] CUDA memory after cleanup: {free/(_B2mb_):.2f}/{total/(_B2mb_):.2f} MB"
-                # )
-            except Exception as e:
-                print(f"Warning: Could not get CUDA memory info: {e}")
 
             if self.force_cleanup:
                 # As a last resort, try memory pool reset
@@ -631,53 +628,31 @@ if _GPU_AVAILABLE:
             print("[MemoryContext] EMERGENCY MEMORY CLEANUP")
             self._cleanup_count += 1
 
-            # Most aggressive cleanup possible
             import gc
 
             gc.collect()
-
-            # Clear all caches multiple times
-            for _ in range(5):
-                try:
-                    _xp.clear_memo_cache()
-                except Exception:
-                    pass
-                self.clear_cache()
-                _time.sleep(0.05)
-
-            # Try to reset the device (nuclear option)
             try:
-                # Note: deviceReset may not be available in all CuPy versions
-                # This is a more aggressive cleanup approach
-                _xp.cuda.runtime.deviceSynchronize()
-                print("[MemoryContext] Emergency synchronization performed")
-            except Exception as e:
-                print(f"Warning: Could not perform emergency cleanup: {e}")
-
-            # Final garbage collection
+                _xp.clear_memo()
+            except Exception:
+                pass
+            self.clear_cache()
             gc.collect()
 
-            # Additional emergency measures
             try:
-                # Try to force complete memory pool reset
                 mempool = _xp.get_default_memory_pool()
                 mempool.free_all_blocks()
                 if hasattr(mempool, "shrink"):
                     mempool.shrink()
-                # Try to free pinned memory pool too
-                pinned_pool = _xp.get_default_pinned_memory_pool()
-                pinned_pool.free_all_blocks()
+                _xp.get_default_pinned_memory_pool().free_all_blocks()
             except Exception as e:
                 print(f"Warning: Could not reset memory pools: {e}")
 
-            # Force final synchronization
-            try:
-                _xp.cuda.runtime.deviceSynchronize()
-            except Exception:
-                pass
-
         def get_memory_info(self) -> dict[str, _t.Any]:
-            """Get comprehensive memory information."""
+            """Get comprehensive memory information.
+
+            ``total``, ``free`` and ``used`` are in MiB (1024**2 bytes);
+            ``pool_*`` entries are in bytes; ``memory_percent`` is a 0-1 fraction.
+            """
             if not _GPU_AVAILABLE:
                 return {"error": "No GPU available"}
 
@@ -721,9 +696,9 @@ if _GPU_AVAILABLE:
 
                 info = {
                     "device": int(device_to_query),
-                    "total": int(total / _B2mb_),
-                    "free": int(free / _B2mb_),
-                    "used": int(used / _B2mb_),
+                    "total": total / _B2mb_,
+                    "free": free / _B2mb_,
+                    "used": used / _B2mb_,
                     "memory_percent": memory_percent,
                     "pool_used": pool_used,
                     "pool_capacity": pool_capacity,
@@ -732,8 +707,8 @@ if _GPU_AVAILABLE:
                 }
 
                 # Update peak memory tracking
-                if used > self._peak_memory:
-                    self._peak_memory = used
+                if used / _B2mb_ > self._peak_memory:
+                    self._peak_memory = used / _B2mb_
 
                 # Store in history
                 self._memory_history.append(
@@ -791,9 +766,9 @@ if _GPU_AVAILABLE:
                     avg_used = _b.sum(used_values) / len(used_values)
 
                     print(f"[MemoryContext] Monitoring summary:")
-                    print(f"  Min: {min_used / (_B2mb_):.2f} MB")
-                    print(f"  Max: {max_used / (_B2mb_):.2f} MB")
-                    print(f"  Avg: {avg_used / (_B2mb_):.2f} MB")
+                    print(f"  Min: {min_used:.2f} MiB")
+                    print(f"  Max: {max_used:.2f} MiB")
+                    print(f"  Avg: {avg_used:.2f} MiB")
 
         def force_memory_deallocation(self):
             """Force memory deallocation by creating pressure on the memory pool."""
@@ -808,28 +783,14 @@ if _GPU_AVAILABLE:
                 #     f"[MemoryContext] Memory before forced deallocation: {free_before/(_B2mb_):.2f}/{total/(_B2mb_):.2f} MB"
                 # )
 
-                # Try to allocate a large chunk to force pool cleanup
-                # This will fail if there's not enough memory, but that's okay
-                try:
-                    # Allocate 90% of available memory temporarily
-                    alloc_size = int(free_before * 0.9)
-                    if alloc_size > 100 * (
-                        1024**3
-                    ):  # Only if we have more than 100MB to work with
-                        temp_array = _xp.empty(
-                            (alloc_size // 4,), dtype=_xp.float32
-                        )  # 4 bytes per float32
-                        # Immediately delete it
-                        del temp_array
-                        # Force garbage collection
-                        import gc
+                # Only release the pooled blocks (no allocation pressure: allocating a
+                # large chunk could starve other processes on the device).
+                if free_before > 100 * _B2mb_:  # skip the work below 100 MiB free
+                    import gc
 
-                        gc.collect()
-                        # Clear memory pool
-                        mempool = _xp.get_default_memory_pool()
-                        mempool.free_all_blocks()
-                except Exception:
-                    # If allocation fails, just do normal cleanup
+                    gc.collect()
+                    _xp.get_default_memory_pool().free_all_blocks()
+                else:
                     self.clear_cache()
 
                 # Synchronize
@@ -839,7 +800,7 @@ if _GPU_AVAILABLE:
                 free_after, _ = _xp.cuda.runtime.memGetInfo()
                 freed = free_after - free_before
                 if self._print_report:
-                    print(f"[MemoryContext] Memory freed: {freed/(_B2mb_):.2f} MB")
+                    print(f"[MemoryContext] Memory freed: {freed/_B2mb_:.2f} MiB")
 
             except Exception as e:
                 print(f"Warning: Could not force memory deallocation: {e}")
@@ -888,11 +849,11 @@ if _GPU_AVAILABLE:
                     f"MemoryContext(device={self.device_id}, error={mem_info['error']})"
                 )
 
-            used_mb = mem_info.get("used", 0) / (_B2mb_)
-            total_mb = mem_info.get("total", 0) / (_B2mb_)
+            used_mb = mem_info.get("used", 0)
+            total_mb = mem_info.get("total", 0)
             percent = mem_info.get("memory_percent", 0) * 100
 
-            return f"MemoryContext(device={mem_info.get('device')}, memory={used_mb:.2f}/{total_mb:.2f} MB ({percent:.1f}%))"
+            return f"MemoryContext(device={mem_info.get('device')}, memory={used_mb:.2f}/{total_mb:.2f} MiB ({percent:.1f}%))"
 
 
 

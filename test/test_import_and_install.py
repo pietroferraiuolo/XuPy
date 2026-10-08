@@ -155,8 +155,8 @@ class TestCoreModuleState:
             assert core.__cuda_version__ is None
 
     def test_byte_constants_module_level(self):
-        assert core._B2mb_ == 1024 * 1000
-        assert core._Btgb_ == 1024 * 1000 * 1000
+        assert core._B2mb_ == 1024**2
+        assert core._Btgb_ == 1024**3
 
     def test_array_size_single_shape(self):
         # 1000*1000 float32 = 4e6 bytes -> 3 "MB" (1024*1000 bytes)
@@ -166,7 +166,7 @@ class TestCoreModuleState:
         one = xp.array_size((1000, 1000), dtype="float64")
         assert one == 7
         total = xp.array_size([(1000, 1000), (1000, 1000)], dtype="float32")
-        assert total == 6
+        assert total == 7  # 8e6 bytes in total (exact, not per-shape truncation)
 
     def test_array_size_gb(self):
         assert xp.array_size((1000, 1000, 1000), dtype="float32", out_unit="GB") == 3

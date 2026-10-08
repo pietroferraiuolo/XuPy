@@ -1,9 +1,24 @@
-from typing import Any, Callable, Optional, Protocol, Sequence, Union, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Optional,
+    Protocol,
+    Sequence,
+    Union,
+    runtime_checkable,
+)
 from numpy.typing import NDArray, ArrayLike, DTypeLike
 from numpy.ma import masked_array
 
+if TYPE_CHECKING:  # cupy is never imported at runtime here
+    import cupy  # type: ignore
+
+    Array = Union[NDArray[Any], "cupy.ndarray"]
+else:
+    Array = Union[NDArray[Any], Any]
+
 # Type aliases for better readability
-Array = NDArray[Any]
 Scalar = Union[int, float, complex]
 
 

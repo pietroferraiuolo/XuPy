@@ -23,7 +23,7 @@ import pytest
 import xupy
 
 from ._ma_parity_helpers import (
-    GPU_OK, XMA, assert_same, cp, host, make, mka, on_dev, to_dev,
+    GPU_OK, NP_LT_22, XMA, assert_same, cp, host, make, mka, on_dev, to_dev,
 )
 
 pytestmark = pytest.mark.filterwarnings("ignore::RuntimeWarning")
@@ -1233,6 +1233,13 @@ class TestUfuncDispatch:
         assert float(r) == pytest.approx(float(n.sum()))
 
 
+def _intp(r):
+    # numpy < 2.1: ``np.count_nonzero(a)`` (axis=None) returns a Python int; 2.1+
+    # returns ``np.intp``.  XuPy always returns ``np.intp``; normalise only a
+    # Python int so that a wrong type on numpy >= 2.1 is still caught.
+    return np.intp(r) if type(r) is int else r
+
+
 _AF = {
     "sum": lambda a: np.sum(a), "sum0": lambda a: np.sum(a, axis=0), "sum1": lambda a: np.sum(a, axis=1),
     "mean": lambda a: np.mean(a), "mean0": lambda a: np.mean(a, axis=0), "std": lambda a: np.std(a),
@@ -1245,7 +1252,7 @@ _AF = {
     "squeeze": lambda a: np.squeeze(a[:1]), "shape": lambda a: np.shape(a), "ndim": lambda a: np.ndim(a),
     "size": lambda a: np.size(a), "argsort": lambda a: np.argsort(a),
     "clip": lambda a: np.clip(a, -1, 1), "round": lambda a: np.round(a, 1), "expand_dims": lambda a: np.expand_dims(a, 0),
-    "swapaxes": lambda a: np.swapaxes(a, 0, 1), "count_nonzero": lambda a: np.count_nonzero(a),
+    "swapaxes": lambda a: np.swapaxes(a, 0, 1), "count_nonzero": lambda a: _intp(np.count_nonzero(a)),
     "nonzero": lambda a: np.nonzero(a), "diagonal": lambda a: np.diagonal(a), "trace": lambda a: np.trace(a),
 }
 
@@ -1525,7 +1532,13 @@ class TestProtocols:
             for mk in (None, "full", "false", "partial"):
                 x, n = pair(np.float64, shape, mk, dev, 2)
 
-                def one(x=x, n=n):
+                def one(x=x, n=n, shape=shape):
+                    if NP_LT_22 and 0 in shape:
+                        # numpy < 2.2: bool(empty array) is False + DeprecationWarning; 2.2+ raises
+                        # ValueError, which XuPy follows.
+                        with pytest.raises(ValueError):
+                            bool(x)
+                        return
                     try:
                         exp = bool(n)
                     except Exception as e:  # noqa: BLE001
